@@ -6,7 +6,8 @@
  *   --at HH:MM     客户指定出发时间 T → 优先 T～T+1h，放宽 T～T+2h
  *   --from HH:MM   显式优先窗口起点（未给 --at 时默认 08:00）
  *   --to HH:MM     显式放宽窗口终点（默认 = 优先窗口末 + 1h）
- *   --pax N        出发人数（默认 1）
+ *   --pax N        出发人数（默认 1，含儿童）
+ *   --kids N       其中 6–14 周岁儿童数（默认 0）；只用于折算全队总价
  *   --json         输出 JSON 而非文本
  *
  * 输入 = `12306.js tickets ... --brief` 的输出（每车次一行 + 两行 # 注释）。
@@ -49,14 +50,53 @@ const fmtPrice = (v) => (v === null || v === undefined || v === '-' ? null : Num
 function parseLocal(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?$/.exec(String(s == null ? '' : s).trim());
   if (!m) return null;
+  // 反解校验：2027-02-29 会被 Date 静默滚到 03-01，必须当非法日期拒掉
+  const canon = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (canon.toISOString().slice(0, 10) !== `${m[1]}-${m[2]}-${m[3]}`) return null;
   const hasT = m[4] !== undefined;
+  if (hasT && (+m[4] > 23 || +m[5] > 59)) return null;
   const d = new Date(+m[1], +m[2] - 1, +m[3], hasT ? +m[4] : 23, hasT ? +m[5] : 59, hasT ? 0 : 59);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 const fmtLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
+// ── 儿童票价折算（人数框的两个数字：总人数 + 儿童数）──────────────────
+// 口径见 SKILL.md「人数与余票规则」：只用于「全队总价」的呈现；
+// 比价与三段归位仍按成人人均价（同席别类内折扣相同，排序等价）。
+// 动车组（G/D/C）：二等座/一等座/无座 5 折、动卧 7 折、商务座/特等座/优选一等座 8 折；
+// 普速：硬座/软座 5 折、硬卧/软卧按 7.5 折近似；机票与接驳不折算（1.0）。
+function childFactor(leg) {
+  const seat = String((leg && leg.seat) || '');
+  const code = String((leg && leg.code) || '').toUpperCase();
+  const emu = /^[GDC]/.test(code) || /动车|高铁/.test(String((leg && leg.kind) || ''));
+  if (/商务|特等|优选一等/.test(seat)) return 0.8;
+  if (/卧/.test(seat)) return emu ? 0.7 : 0.75;
+  if (/二等|一等|无座|硬座|软座/.test(seat)) return 0.5;
+  return 1;
+}
+// 全队总价 = Σ每段（成人数 × 该段成人价 + 儿童数 × 该段成人价 × 儿童折扣）
+function teamTotal(c, pax, kids) {
+  const n = Math.max(1, Number(pax) || 1);
+  const k = Math.min(Math.max(0, Number(kids) || 0), n);
+  const legs = Array.isArray(c && c.legs) ? c.legs : [];
+  if (!legs.length) return Number.isFinite(c && c.cost) ? Math.round(c.cost * n * 10) / 10 : null;
+  let total = 0, known = true;
+  for (const l of legs) {
+    if (!Number.isFinite(l && l.cost)) { known = false; continue; }
+    total += (n - k) * l.cost + k * l.cost * childFactor(l);
+  }
+  return known ? Math.round(total * 10) / 10 : null;
+}
+function paxLabel(pax, kids) {
+  const n = Math.max(1, Number(pax) || 1);
+  const k = Math.min(Math.max(0, Number(kids) || 0), n);
+  return k > 0 ? `${n} 人（${n - k} 成人 + ${k} 儿童）` : `${n} 人`;
+}
+
 function rankMain(file, deadline, emitData, meta) {
   meta = meta || {};
+  const paxN = Math.max(1, Number(meta.pax) || 1);
+  const kidsN = Math.min(Math.max(0, Number(meta.kids) || 0), paxN);
   if (!file) { console.error('用法: node scripts/plan.js rank <candidates.json> [--arrive-by <日期>]（--help 看完整说明）'); process.exit(1); }
   if (!fs.existsSync(file)) { console.error('文件不存在: ' + file); process.exit(1); }
   let list;
@@ -133,7 +173,9 @@ function rankMain(file, deadline, emitData, meta) {
     return s;
   };
   const line = (c, tag) => {
-    const bits = [c.name, money(c.cost), h(c.durationMin)];
+    const tt = kidsN > 0 ? teamTotal(c, paxN, kidsN) : null;
+    const priceBit = Number.isFinite(tt) ? `${money(c.cost)}（全队 ${money(tt)}）` : money(c.cost);
+    const bits = [c.name, priceBit, h(c.durationMin)];
     if (c.windowHit) bits.push(c.windowHit);
     if (c.arriveAt) bits.push('到 ' + c.arriveAt);
     if (isLate(c)) bits.push('⚠ 超出到达日');
@@ -165,8 +207,8 @@ function rankMain(file, deadline, emitData, meta) {
     if (allInfeasible) L.push('  ⚠ **全部候选都不可行**：下面的排序只是兜底，交付前必须先把时刻 / 换乘修对，不得原样交付。');
   }
   // 可行候选太少 = "还没找到"的信号，不是"不可达"的证据。
-  // 实测第四轮：A 的池子里 5 个候选有 4 个不可行、只剩 1 个可行，它据此宣布"唯一通道是经戊市"，
-  // 把被判不可行的铁路方案抬成最省钱/最快——而 B 同轮找到了 10h35m 当日到达的空路与 ¥677.5 的铁路经己市。
+  // 实测第四轮：A 的池子里 5 个候选有 4 个不可行、只剩 1 个可行，它据此宣布"唯一通道是经武汉"，
+  // 把被判不可行的铁路方案抬成最省钱/最快——而 B 同轮找到了 10h35m 当日到达的空路与 ¥677.5 的铁路经西安。
   if (work.length <= 1) {
     L.push('');
     L.push(`⚠ **可行候选只有 ${work.length} 个**——这**不是"不可达"的证据，是"还没找到"的证据**。写页面之前必须再扩一轮：`);
@@ -232,10 +274,12 @@ function rankMain(file, deadline, emitData, meta) {
       // 行里没有的差额（如 extraCost）单列一行，保证「合计 = 明细之和」这条校验永远成立
       if (Number.isFinite(c.cost) && Math.abs(c.cost - sum) > 0.05) rows.push(['接驳 / 附加', `¥${Math.round((c.cost - sum) * 10) / 10}`]);
       rows.push(['合计 / 人', Number.isFinite(c.cost) ? `¥${c.cost}` : '待定（以出票页为准）']);
+      const ttRow = kidsN > 0 ? teamTotal(c, paxN, kidsN) : null;
+      if (Number.isFinite(ttRow)) rows.push([`合计（全队 ${paxN} 人）`, `¥${ttRow}（${paxN - kidsN} 成人 + ${kidsN} 儿童，儿童按优惠价估算）`]);
       return rows;
     };
     // 票种（席别 / 舱位）：从各段取写了的席别，拼成"二等座"或"二等座 + 经济舱"。
-    // ⚠ 兜底**必须**扫候选名 / 备注 / 段说明：实测（2026-09-26 乙市→戊市 A/B）手写 options.json 的腿
+    // ⚠ 兜底**必须**扫候选名 / 备注 / 段说明：实测（2026-09-26 上海→武汉 A/B）手写 options.json 的腿
     //   常常不写 `seat`，而票种其实写在候选名里（"高铁 G1523 直达（拼票：二等座 1 张 + 一等座 1 张）"）。
     //   旧实现取不到就回退 `'票价'` → 产出 `**票价 ¥611.5 / 人**` → **被自家 A2 门禁拒绝**，
     //   执行者只好回头改数据重生成（一次白跑的生成 + 数条 edit）。
@@ -258,6 +302,7 @@ function rankMain(file, deadline, emitData, meta) {
       /偏紧/.test(String(c.note || '')) ? '⚠ **换乘偏紧**：到站后余量不足 30 分钟，前段一旦晚点就赶不上，请自行留足时间。' : null,
       overnight(c) ? '本方案含**过夜**（跨天到达），请备好过夜用品与餐食。' : null,
       !Number.isFinite(c.cost) ? '**票价为参考价 / 待定，非当日实价**，以出票页为准。' : null,
+      kidsN > 0 ? `本次为 ${paxLabel(paxN, kidsN)}：儿童票价按现行铁路儿童优惠票规则折算（动车二等座/一等座 5 折、动卧 7 折、商务座/特等座 8 折、普速硬座 5 折），机票与接驳按成人价计；儿童优惠票与成人票不是同一票池，实际以出票页为准。` : null,
       c.note || null,
     ].filter(Boolean);
     const planOf = (c) => ({
@@ -283,31 +328,42 @@ function rankMain(file, deadline, emitData, meta) {
     const extraShortNote = extra.length >= 2 ? null
       : `本次可给出的额外方案只有 ${extra.length} 个（技能目标 ≥2）——原因是**本次查询到的可行候选本身就只有这么多**：`
         + `无票 / 余票不足 / 班次太少 / 窗口内无可选班次，故不凑数（不编造方案）。`;
+    const priceCard = (c) => {
+      if (!Number.isFinite(c.cost)) return '票价待定';
+      const tt = kidsN > 0 ? teamTotal(c, paxN, kidsN) : null;
+      return Number.isFinite(tt) ? `¥${c.cost} / 人 · 全队 ¥${tt}` : `¥${c.cost} / 人`;
+    };
+    const priceCell = (c) => {
+      if (!Number.isFinite(c.cost)) return '票价待定';
+      const tt = kidsN > 0 ? teamTotal(c, paxN, kidsN) : null;
+      return Number.isFinite(tt) ? `¥${c.cost} / ¥${tt}` : `¥${c.cost}`;
+    };
     const data = {
       coverTitle: `${meta.route || '路线'} 交通方案`,
-      coverSubtitle: `出行日期 ${meta.date || '（补写）'}　出发时间窗口 ${meta.window || '不限'}　${meta.pax || 1} 人`,
+      coverSubtitle: `出行日期 ${meta.date || '（补写）'}　出发时间窗口 ${meta.window || '不限'}　${paxLabel(paxN, kidsN)}`,
       coverCards: [
         ['出发 / 到达', meta.route || '（补写）', '按「方案终点」口径算到到达站 / 落地机场'],
         ['出行日期', meta.date || '（补写）', '余票与票价为查询日数据，出行前请复核'],
-        ['出行人数', `${meta.pax || 1} 人`, '各方案余票均已按此人数校验'],
-        ['最省钱', Number.isFinite(cheapest.cost) ? `¥${cheapest.cost} / 人` : '票价待定', `${hm(cheapest.durationMin)}${cheapest.arriveAt ? '，到 ' + clock(cheapest.arriveAt) : ''}`],
-        ['最快', `${hm(fastest.durationMin)}`, Number.isFinite(fastest.cost) ? `¥${fastest.cost} / 人` : '票价待定'],
+        ['出行人数', `${paxLabel(paxN, kidsN)}`, '各方案余票均已按此人数校验（儿童同占座）'],
+        ['最省钱', priceCard(cheapest), `${hm(cheapest.durationMin)}${cheapest.arriveAt ? '，到 ' + clock(cheapest.arriveAt) : ''}`],
+        ['最快', `${hm(fastest.durationMin)}`, priceCard(fastest)],
       ],
-      coverNote: `本页只提供交通路线，不含景点与游玩安排。共 ${seq.length} 个方案：最省钱 ${hm(cheapest.durationMin)}${Number.isFinite(cheapest.cost) ? '（¥' + cheapest.cost + '/人）' : ''}，最快 ${hm(fastest.durationMin)}${fastest.arriveAt ? '（' + clock(fastest.arriveAt) + ' 到）' : ''}${seq.some(({ c }) => overnight(c)) ? '；含过夜的方案已单独标注' : ''}。总耗时与总费用均含出发端接驳与换乘 / 候机时间；余票与票价为查询日数据，出行前请以购票页为准。`,
+      coverNote: `${kidsN > 0 ? '本页同时给出人均与全队总价（' + paxLabel(paxN, kidsN) + '，儿童票价按儿童优惠票规则估算）。' : ''}本页只提供交通路线，不含景点与游玩安排。共 ${seq.length} 个方案：最省钱 ${hm(cheapest.durationMin)}${Number.isFinite(cheapest.cost) ? '（¥' + cheapest.cost + '/人）' : ''}，最快 ${hm(fastest.durationMin)}${fastest.arriveAt ? '（' + clock(fastest.arriveAt) + ' 到）' : ''}${seq.some(({ c }) => overnight(c)) ? '；含过夜的方案已单独标注' : ''}。总耗时与总费用均含出发端接驳与换乘 / 候机时间；余票与票价为查询日数据，出行前请以购票页为准。`,
       overview: {
         title: '决策速览',
         subtitle: `${seq.length} 个方案横向对比`,
         rows: [
-          ['方案', '总费用（人均）', '总耗时', '到达时刻与窗口命中'],
+          ['方案', kidsN > 0 ? '总费用（人均 / 全队）' : '总费用（人均）', '总耗时', '到达时刻与窗口命中'],
           ...seq.map(({ c, tag }) => [
             `${tag} · ${c.name}`,
-            Number.isFinite(c.cost) ? `¥${c.cost}` : '票价待定',
+            priceCell(c),
             hm(c.durationMin),
             `${c.arriveAt ? clock(c.arriveAt) + ' 到' : '—'}${c.windowHit ? '（' + c.windowHit + '）' : ''}`,
           ]),
         ],
         footnotes: [
           '价格均为人民币元；铁路按席别标价，均为人均价。',
+          ...(kidsN > 0 ? [`全队总价按 ${paxLabel(paxN, kidsN)} 折算：儿童按现行铁路儿童优惠票规则估算（动车二等座/一等座 5 折、动卧 7 折、商务座/特等座 8 折、普速硬座 5 折），机票与接驳按成人价；实际以出票页为准。`] : []),
           '总耗时口径：从出发地出发（含去车站 / 去机场的接驳与起飞前候机缓冲）→ 候车候机 → 运行（含换乘与等待）→ 算到到达站 / 落地机场为止。',
           `余票为查询日（${meta.date || '查询日'}）数据，出行前请以购票页实时余票为准。`,
           ...(seq.some(({ c }) => !Number.isFinite(c.cost)) ? ['含机票的方案票价为**查询当日所见的参考价（已计入"最省钱"比价）**，含机建 + 燃油，以出票页为准；票价待定（无数字）者不参与比价。'] : []),
@@ -411,12 +467,12 @@ function buildOption(o, oi, dayMap) {
         const nDay = nDep && nDep.hasDate ? dateIdx(dayMap, nDep.date) : aDay + (nDep && nDep.min < arr.min ? 1 : 0);
         const gap = (nDay * 1440 + (nDep ? nDep.min : 0)) - arrAbs;
         const same = String(leg.to || '').trim() === String(nx.from || '').trim();
-        // 空中段有**自己**的门槛（references/air-fallback.md「中转时间校验」，2026-10-07 收束为一条）：
+        // 空中段有**自己**的门槛（references/air-transfer-rules.md「中转组合规则」，2026-10-07 收束为一条）：
         // ① 平台给出的联程 / 中转组合 → 衔接由航司安排并担保，**不做任何时间校验**（写 throughCheckin 即放行）；
         // ② 其余航空衔接（非同机场转场等）→ **必须在下一段起飞前 1.5 小时（90 分）到达下一段所在机场**，
         //    即「到站后余量（扣掉机场间转场）≥ 90 分」；不足即排除。
         // 从前这里整段跳过（`if (nx && !isAir)`，理由是"空中不适用铁路门槛"）——理由对、做法错：
-        // 空中另有一套门槛，跳过等于**谁都不管**。实测第三轮 A/B：A 把"戊市跨航司只留 65 分"的方案
+        // 空中另有一套门槛，跳过等于**谁都不管**。实测第三轮 A/B：A 把"武汉跨航司只留 65 分"的方案
         // 封成了最省钱+最快（它自己在正文里标了风险，但归位照旧）。
         const isFlight = (c) => { const s = String(c || '').trim(); return /^(?=[A-Z0-9]*[A-Z])[A-Z0-9]{2}\d{2,4}$/i.test(s) && !/^[GDCTKZYS]\d{1,4}$/i.test(s); };
         // **只有两段都是航班**才算"航空中转"：`机场快线 → 航班` 是地面接驳，套跨航司门槛会误杀
@@ -479,9 +535,9 @@ function buildOption(o, oi, dayMap) {
           // 20–29 分：可行但偏紧 → 必须在页面与聊天标红警告客户
           tight.push(`第 ${li + 1}→${li + 2} 段：到站后仅剩 ${gapTxt(slack)}（≥20 分但不足 30 分）——**偏紧，必须在页面与聊天标红警告客户**：前段一旦晚点就赶不上`);
         } else if (!same) {
-          // 异站衔接**通过了也要写出来**：从前只有"不达标"才打印，于是"上一段到丙南、下一段从丁东发"
+          // 异站衔接**通过了也要写出来**：从前只有"不达标"才打印，于是"上一段到广州南、下一段从深圳东发"
           // 这种**跨城断链**（中间根本没腿）会静默通过——代码分不清"同城异站"与"不同城"（站表没有城市字段，
-          // 拼音前缀也不行：同城两站的中文前缀可能不同）。所以只陈述事实，由执行者判断。
+          // 拼音前缀也不行：武汉=wuhan / 武昌=wuchang 是同城却是不同前缀）。所以只陈述事实，由执行者判断。
           crossNotes.push(airRule
             ? `空中衔接 ${leg.to} → ${nx.from} 是**不同机场**（已按"起飞前 1.5 小时到机场"即 ${need} 分门槛校验，转场 ${transferMin} 分，余 ${gapTxt(slack)}）`
             : `异站衔接 ${leg.to} → ${nx.from}（按到站后余量 ${need} 分钟校验，接驳 ${transferMin} 分，余 ${gapTxt(slack)}）`);
@@ -558,6 +614,9 @@ function emitCandidates(out, warn, outFile, quiet) {
       `然后被 A2 门禁拒（"报价未标明票种"）：`);
     noSeat.forEach(c => L.push(`  - ${c.name}`));
     L.push('  → **改 options.json：给每条腿补 `"seat"`**（G/C/D 写 二等座/一等座；普速写 硬座/硬卧/软卧；航空写 经济舱；接驳写 打车/地铁时不写也可）');
+    process.stdout.write(L.join('\n') + '\n');
+    console.error('\n[candidates] 候选不合格：' + noSeat.length + ' 个候选的 legs 缺 seat（票种）——先补数据再往下走，别把这批交给 rank（否则要到 34s 的 HTML 门禁才被拦）。');
+    process.exit(1);
     L.push('  → 票种只写在候选名里不够（如"拼票：二等座 1 张 + 一等座 1 张"），**腿自身的 seat 才是价格明细的依据**。');
   }
   if (!quiet) L.push('');
@@ -595,12 +654,13 @@ function makeWindow(opt) {
 
 // ── 拼链（把"逐腿查完自己拼组合"交给代码）──────────────────────────────
 // 为什么要有：SKILL.md 要求"自己枚举枢纽逐腿拼"，但实测执行者会**枚举出一堆腿却拼不出组合**
-// （真实踩过：试了 丁北→丁东 换乘 4 分钟就整条放弃，从没试过"地铁衔接 + 异站 2 小时"那条）。
+// （真实踩过：试了 深圳北→深圳东 换乘 4 分钟就整条放弃，从没试过"地铁衔接 + 异站 2 小时"那条）。
 // 输入 = 每条腿一个 brief 格式文件（`12306.js tickets --brief` 的输出；非铁路腿可手写同格式）；
 // 输出 = 可行组合（含成本 / 总耗时 / 到达时刻 / 换乘余量）写成 candidates.json，交给 rank 归位。
 function composeMain(files, opt) {
-  if (!files.length) { console.error('用法: node scripts/plan.js compose <腿1.txt> <腿2.txt> [...] [--pax N] [--at HH:MM] [--arrive-by <日期>] [--max N] [--out <candidates.json>]（--help 看完整说明）'); process.exit(1); }
+  if (!files.length) { console.error('用法: node scripts/plan.js compose <腿1.txt> <腿2.txt> [...] [--pax N] [--kids N] [--at HH:MM] [--arrive-by <日期>] [--max N] [--out <candidates.json>]（--help 看完整说明）'); process.exit(1); }
   const pax = opt.pax;
+  const kids = Math.min(Math.max(0, Number(opt.kids) || 0), Math.max(1, Number(opt.pax) || 1));
   const briefs = files.map(f => {
     if (!fs.existsSync(f)) { console.error('文件不存在: ' + f); process.exit(1); }
     return { file: f, ...parseBrief(f) };
@@ -649,6 +709,9 @@ function composeMain(files, opt) {
   // 组合枚举：按**到站后余量**剪枝（底限 20 分；细致判定交给 buildOption）；超出到达日 1 天以上的直接剪掉
   const win = makeWindow(opt);
   const deadline = opt.arriveBy ? parseLocal(opt.arriveBy) : null;
+  if (opt.window && !/^([01]\d|2[0-3]):[0-5]\d\s*-\s*([01]\d|2[0-3]):[0-5]\d$/.test(String(opt.window).trim())) {
+    console.error(`--window 需要 "HH:MM-HH:MM"（如 08:00-10:00），收到 "${opt.window}"`); process.exit(1);
+  }
   if (opt.arriveBy && !deadline) { console.error('--arrive-by 需为 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM'); process.exit(1); }
   const deadlineMin = deadline ? Math.round((deadline - base) / 60000) : null;
   const lateLimit = deadlineMin === null ? null : deadlineMin + 1440;
@@ -685,7 +748,7 @@ function composeMain(files, opt) {
 
   const inWin = res.filter(r => win.hit(r.firstStart) !== '窗口外');
   // 同价同到点的组合只留一个：留**换乘余量最大**的那个（更抗晚点）。
-  // 实测踩过：23 个组合里 6 个是"只差丁北坐哪班地铁"的同价同时刻组合，白白占掉展示位。
+  // 实测踩过：23 个组合里 6 个是"只差深圳北坐哪班地铁"的同价同时刻组合，白白占掉展示位。
   const minSlack = (r) => { let m = Infinity; for (let k = 1; k < r.chain.length; k++) m = Math.min(m, r.chain[k].depAbs - r.chain[k - 1].arrAbs); return m; };
   const dedupe = (list) => {
     const best = new Map();
@@ -704,7 +767,7 @@ function composeMain(files, opt) {
   const picked = [], seen = new Set(), perCost = new Map();
   const keyOf = (r) => r.chain.map(x => x.code + '@' + x.depAbs).join('|');
   // 同一票价的组合最多给 2 个：中国高铁同线二等座常是**一价到底**，不设上限时 6 个展示位会被
-  // 6 个几乎一样的组合占满（实测踩过：癸市→戌市 拼链 6 个组合全是 ¥392）。
+  // 6 个几乎一样的组合占满（实测踩过：宁德→东莞 拼链 6 个组合全是 ¥392）。
   const add = (r) => {
     if (picked.length >= max) return;
     const k = keyOf(r);
@@ -747,7 +810,7 @@ function composeMain(files, opt) {
   const recs = opts2.map((o, i) => ({ ...buildOption(o, i, dayMap).rec, legs: o.legs }));
 
   const L = [];
-  L.push(`# 拼链 ${briefs[0].from || '?'} → ${briefs[briefs.length - 1].to || '?'}  ${briefs[0].date} 起  人数 ${pax}  ${win.txt}`);
+  L.push(`# 拼链 ${briefs[0].from || '?'} → ${briefs[briefs.length - 1].to || '?'}  ${briefs[0].date} 起  人数 ${paxLabel(pax, kids)}  ${win.txt}`);
   L.push(`# ${stat.join(' · ')}`);
   if (chainWarn.length) { L.push('⚠ 腿间接不上（已按「异站衔接」处理——缺接驳耗时即为数据不全）：'); chainWarn.forEach(w => L.push('  - ' + w)); }
   if (!res.length) {
@@ -781,7 +844,7 @@ function composeMain(files, opt) {
 function exploreMain(opt) {
   const { execFileSync } = require('node:child_process');
   const chains = (opt.chains || []).map(s => String(s).split(/[,，>→]+/).map(x => x.trim()).filter(Boolean)).filter(c => c.length >= 2);
-  if (!chains.length) { console.error('用法: node scripts/plan.js explore --chain "甲市,乙北,丙西,丁西" [--chain "..."] --date 2026-10-01 [--pax 2] [--from 07:00 --to 08:00] [--arrive-by 2026-10-02] [--route "汕头→张掖"] [--out-dir <目录>] [--tickets <12306.js 路径>]'); process.exit(1); }
+  if (!chains.length) { console.error('用法: node scripts/plan.js explore --chain "汕头,深圳北,兰州西,张掖西" [--chain "..."] --date 2026-10-01 [--pax 2] [--kids N] [--from 07:00 --to 08:00] [--arrive-by 2026-10-02] [--route "汕头→张掖"] [--out-dir <目录>] [--tickets <12306.js 路径>]'); process.exit(1); }
   const dir = opt.outDir || '.';
   fs.mkdirSync(dir, { recursive: true });
   const tickets = opt.tickets || path.join(__dirname, '12306.js');
@@ -823,7 +886,7 @@ function exploreMain(opt) {
     }
     if (broke) { L.push(`  ✗ 链${ci + 1} ${stops.join('→')}：${broke}`); return; }
     const out = path.join(dir, `chain${ci + 1}_candidates.json`);
-    const args = [__filename, 'compose', ...legs, '--pax', String(opt.pax || 1), '--out', out];
+    const args = [__filename, 'compose', ...legs, '--pax', String(opt.pax || 1), '--kids', String(opt.kids || 0), '--out', out];
     if (opt.from) args.push('--from', opt.from);
     if (opt.to) args.push('--to', opt.to);
     if (opt.arriveBy) args.push('--arrive-by', opt.arriveBy);
@@ -854,7 +917,7 @@ function exploreMain(opt) {
   L.push('');
   process.stdout.write(L.join('\n') + '\n');
 
-  const rArgs = [__filename, 'rank', mergedFile, '--pax', String(opt.pax || 1), '--emit-data', opt.emitData || path.join(dir, 'data.json')];
+  const rArgs = [__filename, 'rank', mergedFile, '--pax', String(opt.pax || 1), '--kids', String(opt.kids || 0), '--emit-data', opt.emitData || path.join(dir, 'data.json')];
   if (opt.arriveBy) rArgs.push('--arrive-by', opt.arriveBy);
   if (opt.route) rArgs.push('--route', opt.route);
   if (opt.date) rArgs.push('--date', opt.date);
@@ -874,27 +937,31 @@ const HELP = [
   '用法:',
   '  node scripts/plan.js <brief.txt> [选项]',
   '  node scripts/plan.js screen <brief.txt> [选项]   # 筛选模式（默认；省略 screen 亦可）',
-  '  node scripts/plan.js rank   <candidates.json> [--arrive-by <日期>]   # 三段归位模式',
+  '  node scripts/plan.js rank   <candidates.json> [--arrive-by <日期>] [--route "<起点→终点>"] [--date YYYY-MM-DD] [--window "07:00–09:00"]   # 三段归位模式',
   '  node scripts/plan.js candidates <options.json> [--out <candidates.json>]   # 装配候选模式',
   '  node scripts/plan.js compose <腿1.txt> <腿2.txt> [...] [选项]        # 逐腿拼链模式',
   '  node scripts/plan.js explore --chain "起点,枢纽…,终点" --date <日期>  # 一趟跑完拼链→归位→出 data.json',
   '',
   '参数:',
-  '  <brief.txt>   12306.js tickets ... --brief 的输出文件（也接受未落盘时的临时文件）',
+  '  <brief文件>   12306.js tickets ... --brief 的输出文件（也接受未落盘时的临时文件）',
   '',
   '选项:',
   '  --at HH:MM        客户端指定出发时间 T → 优先窗口 T～T+1h，放宽至 T+2h',
   '  --from HH:MM      显式窗口起点（未给 --at 时默认 08:00）',
   '  --to HH:MM        显式窗口终点（未给 --at 时：默认起点 08:00、终点 10:00，给了 --to 就是单一窗口；',
   '                    给了 --at 时本项无效——那时放宽窗口终点固定为 T+2h）',
-  '  --pax N           出发人数（默认 1）；影响余票校验与拼票判定',
+  '  --pax N           出发人数（默认 1，含儿童）；影响余票校验与拼票判定',
+  '  --kids N          其中 6–14 周岁儿童数（默认 0）：余票仍按总人数校验，',
+  '                    另算「全队总价」——儿童按现行儿童优惠票折算（动车二等/一等 5 折、',
+  '                    动卧 7 折、商务/特等 8 折；普速硬座 5 折；机票与接驳按成人价）',
   '  --arrive-by <日期> rank 模式：客户要求的到达日（YYYY-MM-DD，或 YYYY-MM-DDTHH:MM 精确到时刻）；',
+  '  --route / --date / --window  rank 模式：**只写进 --emit-data 的封面文案（页标题 / 出行日期 / 出发窗口），不参与筛选**；',
   '                     超出该日的候选**不进「最省钱 / 最快」**，降级到额外方案并标注',
   '  --json            输出结构化 JSON（默认输出人行可读文本）',
   '  --help, -h        显示本说明',
   '',
   'rank 模式的输入 JSON（数组）:',
-  "  [{ \"name\": \"经壬南 动车\", \"cost\": 385, \"durationMin\": 485, \"arriveAt\": \"2026-10-01T18:05\", \"windowHit\": \"窗口内\", \"kind\": \"铁路\" }]",
+  "  [{ \"name\": \"经福州南 动车\", \"cost\": 385, \"durationMin\": 485, \"arriveAt\": \"2026-10-01T18:05\", \"windowHit\": \"窗口内\", \"kind\": \"铁路\" }]",
   '  · name 必填；durationMin 必填（总耗时，分钟）',
   '  · cost 给数字（**机票写参考价 = 票面 + 机建 + 燃油，它会照常参与"最省钱"比价**），或 null 表示票价待定（待定者不参与最省钱，但照常参与最快）',
   '  · arriveAt = 到达时刻（如 "2026-10-02T15:49"）；**用了 --arrive-by 就必填**',
@@ -904,7 +971,7 @@ const HELP = [
   '  node scripts/plan.js candidates <options.json> [--out <candidates.json>]',
   '  输入 = 你查到的方案清单，每项按「段」写，**只写事实、不用自己算**：',
   '  [{ "name": "经西宁 Z508+Z21", "kind": "铁路", "windowHit": "窗口外", "note": "…", "extraCost": 0,',
-  '     "legs": [ { "code": "Z508", "from": "某市", "dep": "2026-10-01 12:00", "to": "某市", "arr": "2026-10-02 05:30", "cost": 232.5 },',
+  '     "legs": [ { "code": "Z508", "from": "成都", "dep": "2026-10-01 12:00", "to": "西宁", "arr": "2026-10-02 05:30", "cost": 232.5 },',
   '               { "code": "Z21",  "from": "西宁", "dep": "2026-10-02 08:00", "to": "拉萨", "arr": "2026-10-02 11:46", "cost": 155 } ] }]',
   '  · 它替你算：cost（各段相加 + extraCost；某段缺票价则整体记 null）、durationMin（首段发车→末段到达）、arriveAt；',
   '  · 跨天必须把时刻写全（"YYYY-MM-DD HH:MM"），只写 "HH:MM" 推不出到达日、rank --arrive-by 会拒收；',
@@ -916,17 +983,17 @@ const HELP = [
   '  · 加 --out 落盘后直接喂给 rank：`plan.js rank <candidates.json> --arrive-by <到达日>`。',
   '',
   'compose 模式（**含非铁路腿 / 要手工控制 legs 时用它**；纯铁路枚举请用 explore，别自己脑内组合）:',
-  '  node scripts/plan.js compose <腿1.txt> <腿2.txt> [...] [--pax N] [--at HH:MM] [--arrive-by <日期>] [--max N] [--out <candidates.json>]',
+  '  node scripts/plan.js compose <腿1.txt> <腿2.txt> [...] [--pax N] [--kids N] [--at HH:MM] [--arrive-by <日期>] [--max N] [--out <candidates.json>]',
   '  输入 = **每条腿一个 brief 格式文件，按时间先后排列**（自动取头行的 发站→到站 与日期）：',
   '    · 铁路腿：直接给 `12306.js tickets <A> <B> <日期> --brief --out 腿N.txt` 的输出文件；',
   '    · 非铁路腿（跨市地铁 / 城际公交 / 大巴）**按同一格式手写**，例：',
-  '        # 丁北 → 丁东  2026-10-01',
-  '        地铁5号线  丁北→丁东  07:40→08:12  00:32  硬座5/有',
+  '        # 深圳北 → 深圳东  2026-10-01',
+  '        地铁5号线  深圳北→深圳东  07:40→08:12  00:32  硬座5/有',
   '      席别名要用规则里的名字（普速腿写 硬座/硬卧/软卧，G/C/D 腿写 二等座/一等座），',
   '      否则席别裁决认不出、这一腿会被当成"无票"；历时字段是 HH:MM（32 分钟写 00:32）。',
   '  它做什么：**对每条腿筛出"人数够 + 有票"的车次，再把各腿交叉组合**，按「换乘时间规则」',
   '    （一律看到站后余量）过滤，套时间窗口，并剪掉超出 --arrive-by 一天以上的组合。',
-  '    腿与腿之间站名不一致（如 丁北 → 丁 换乘）会自动按**异站**处理并在输出里点名。',
+  '    腿与腿之间站名不一致（如 深圳北 → 深圳 换乘）会自动按**异站**处理并在输出里点名。',
   '  输出：**腿库 + 每个可行组合的成本 / 总耗时 / 到达时刻 / 换乘余量**，并落盘成 candidates.json',
   '    （其中 legs 带完整时刻，写 HTML 方案时可直接照抄）→ 下一步 `plan.js rank <candidates.json> --arrive-by <到达日>`。',
   '  --max N   最多给几个组合（默认 6）。它先取最便宜 3 个 + 最快 3 个，再按票价补齐。',
@@ -936,7 +1003,7 @@ const HELP = [
   '  node scripts/plan.js explore --chain "起点,枢纽1,枢纽2,…,终点" [--chain "…"] --date <日期> [选项]',
   '  你只给**枢纽链**（可给多条），代码替你完成：逐腿 tickets 查询 → 拼链 → 合并去重 → 三段归位',
   '  → 写出 data.json；最后只打印短名单。',
-  '  选项: --pax N / --from HH:MM --to HH:MM / --arrive-by <日期> / --route "<起点→终点>"',
+  '  选项: --pax N / --kids N / --from HH:MM --to HH:MM / --arrive-by <日期> / --route "<起点→终点>"',
   '        / --out-dir <目录>（腿文件与 data.json 的落点，默认当前目录）',
   '        / --tickets <12306.js 路径>（默认同目录的 12306.js）',
   '        / --emit-data <文件>（把 explore 的短名单直接写成 make_html.js plan 能用的 data.json，省一次手工转写）',
@@ -970,10 +1037,11 @@ const HELP = [
   '  · 不要读本脚本源码——它可能很大，会污染上下文。用 --help 就够了。',
 ].join('\n') + '\n';
 if (argv.includes('--help') || argv.includes('-h')) { process.stdout.write(HELP); process.exit(0); }
-const opt = { pax: 1, at: null, from: null, to: null, json: false, file: null, files: [], arriveBy: null, max: null, emitData: null, route: null, date: null, window: null, chains: [], outDir: null, tickets: null };
+const opt = { pax: 1, kids: 0, at: null, from: null, to: null, json: false, file: null, files: [], arriveBy: null, max: null, emitData: null, route: null, date: null, window: null, chains: [], outDir: null, tickets: null };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--pax') opt.pax = parseInt(argv[++i], 10);
+  else if (a === '--kids') opt.kids = parseInt(argv[++i], 10);
   else if (a === '--at') opt.at = argv[++i];
   else if (a === '--from') opt.from = argv[++i];
   else if (a === '--to') opt.to = argv[++i];
@@ -1002,13 +1070,14 @@ if (opt.arriveBy) {
   if (!deadline) { console.error('--arrive-by 需为 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM'); process.exit(1); }
 }
 if (!Number.isFinite(opt.pax) || opt.pax < 1) { console.error('--pax 必须是 ≥1 的整数'); process.exit(1); }
-if (opt.mode === 'rank') rankMain(opt.file, deadline, opt.emitData || null, { route: opt.route, date: opt.date, window: opt.window, pax: opt.pax });
+if (!Number.isFinite(opt.kids) || opt.kids < 0) { console.error('--kids 必须是 ≥0 的整数（默认 0）'); process.exit(1); }
+if (opt.kids > opt.pax) { console.error(`--kids（${opt.kids}）不能大于 --pax（${opt.pax}）`); process.exit(1); }
+if (opt.mode === 'rank') rankMain(opt.file, deadline, opt.emitData || null, { route: opt.route, date: opt.date, window: opt.window, pax: opt.pax, kids: opt.kids });
 if (opt.mode === 'candidates') candidatesMain(opt.file, opt.out || null);
 if (opt.mode === 'compose') composeMain(opt.files, opt);
 if (opt.mode === 'explore') exploreMain(opt);
 if (!opt.file) { console.error('用法: node scripts/plan.js <brief.txt> [--at HH:MM] [--from HH:MM] [--to HH:MM] [--pax N] [--json]\n      或: node scripts/plan.js rank <candidates.json>（--help 看完整说明）'); process.exit(1); }
 if (!fs.existsSync(opt.file)) { console.error('文件不存在: ' + opt.file); process.exit(1); }
-if (!Number.isFinite(opt.pax) || opt.pax < 1) { console.error('--pax 必须是 ≥1 的整数'); process.exit(1); }
 
 // 窗口（口径见 SKILL.md「时间窗口规则」；实现集中在 makeWindow，screen 与 compose 共用）
 const win = makeWindow(opt);
@@ -1139,7 +1208,7 @@ const dead = out.filter(x => !x.decide.ok);
 if (opt.json) {
   process.stdout.write(JSON.stringify({
     from: meta[1] || null, to: meta[2] || null, date: meta[3] || null,
-    pax: opt.pax,
+    pax: opt.pax, kids: opt.kids || 0,
     window: { priFrom: fmt(priFrom), priTo: fmt(priTo), wideTo: fmt(wideTo) },
     totals: { trains: out.length, usable: usable.length, usableInWindow: inWindow.length, dead: dead.length },
     usable: usable.map(pick), dead: dead.map(x => ({ code: x.code, start: x.start, hit: x.hit, reason: x.decide.notes.join('；') })),
@@ -1148,7 +1217,7 @@ if (opt.json) {
 } else {
   const L = [];
   const winTxt = singleWindow ? `窗口 ${fmt(priFrom)}-${fmt(priTo)}` : `优先窗口 ${fmt(priFrom)}-${fmt(priTo)}  放宽至 ${fmt(wideTo)}`;
-  L.push(`# ${meta[1] || '?'} → ${meta[2] || '?'}  ${meta[3] || '?'}  人数 ${opt.pax}  ${winTxt}`);
+  L.push(`# ${meta[1] || '?'} → ${meta[2] || '?'}  ${meta[3] || '?'}  人数 ${paxLabel(opt.pax, opt.kids)}  ${winTxt}`);
   L.push(`# 共 ${out.length} 车次：可用 ${usable.length}（其中窗口内 ${inWindow.length}）· 无票 ${dead.length}`);
   L.push('');
   L.push(usable.length ? '== 可用（按票价升序）==' : '== 可用（无）==');

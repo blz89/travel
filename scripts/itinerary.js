@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * itinerary.js —— 行程串联顺序（最近邻）+ 错峰可行性判定
+ * itinerary.js —— 行程串联顺序（最近邻）
  *
  * 用法: node scripts/itinerary.js <plan.json> [--start <名称>] [--json]
  *       node scripts/itinerary.js --help
@@ -27,15 +27,16 @@
 const fs = require('node:fs');
 
 const HELP = [
-  'itinerary.js —— 行程串联顺序（最近邻）+ 错峰可行性判定',
+  'itinerary.js —— 行程串联顺序（最近邻）',
   '',
   '用法:',
   '  node scripts/itinerary.js <plan.json> [--start <名称>] [--json]',
   '  node scripts/itinerary.js dist <anchors.json> [--margin 1.15] [--out <dist.json>]',
+  '  node scripts/itinerary.js emit <plan.json> [--start <名称>] [--out data.json] [--mode bus|taxi|mixed]',
+  '                                     # 直接产出行程页 data.json 骨架（结构 + 距离算好，方式/耗时留给你填）',
   '',
   '选项:',
   '  --start <名称>   覆盖 JSON 里的 start（起点：到达站 / 机场 / 市中心 / 高速路口）',
-  '  --gap <km>       错峰可行性阈值，默认 20（相邻两景区间隔 ≤ 此值才可串成一条线）',
   '  --json           输出结构化 JSON',
   '  --help, -h       显示本说明',
   '',
@@ -45,14 +46,14 @@ const HELP = [
   '  · **尽量给每个景点带上 dir（方位）**：N/NE/E/SE/S/SW/W/NW 或角度（如 135）。',
   '    给了方位 → 脚本用**余弦定理**算两两距离，可信；',
   '    没给方位 → 只能退回「里程差值 × 余量」，**它只在两点同向时成立，不同向会严重低估**',
-  '    （实测：甲景区与乙景区离某站都约 25km 但方向不同，差值法给 3.5km，实际约 25～28km）。',
+  '    （实测：莫高窟与鸣沙山离敦煌站都约 25km 但方向不同，差值法给 3.5km，实际约 25～28km）。',
   '  · 无论哪种算法都是**估算**，页面与聊天里必须注明"里程为参考约数"。',
   '',
   '它做什么:',
   '  1. 定首个景点：JSON 里给了 inputStart 就用它（用户选项②）；否则取距 start 最近的那个（选项①）。',
   '  2. 之后按最近邻逐个串联剩余景点（每次从剩余里取距离最近的一个）。',
   '  3. 给出每段里程与总里程。',
-  '  4. 判定错峰可行性：相邻两景区间隔是否都 ≤ --gap（默认 20km）。',
+  '  4. （已移除）不再判定「错峰可行性」——本技能只做路线规划，不做人流避让排布。',
   '',
   '输入 JSON 形状:',
   '  {',
@@ -64,7 +65,7 @@ const HELP = [
   '  dist 只需给单向值，脚本按对称处理（缺哪边用另一边补）。',
   '',
   '输出:',
-  '  串联顺序（起点 → 景点1 → 景点2 …）、每段里程、总里程、错峰可行性结论。',
+  '  串联顺序（起点 → 景点1 → 景点2 …）、每段里程、总里程。',
   '',
   '退出码: 0 = 成功；1 = 用法 / 数据错误（如景点缺距离、两景点之间无路可查）。',
   '',
@@ -76,7 +77,7 @@ const HELP = [
 // 但那是纯减法，从前由执行者手算 N²/2 对（5～8 个景点就是 10～28 对），四轮实测全是摩擦点。
 // 现在执行者只负责查"每个景点距锚点多少公里"（判断+取数），矩阵交给代码。
 // 方位：可选。**给了方位才算得对**——只给里程时 |a−b| 只在两点同向时成立，
-// 不同向会严重低估（实测：甲景区与乙景区离某站都约 25km 但方向不同，
+// 不同向会严重低估（实测：莫高窟与鸣沙山离敦煌站都约 25km 但方向不同，
 // 差值法算出 3.5km，实际约 25～28km）。给了方位就走余弦定理。
 const COMPASS = { N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315 };
 function dirDeg(v) {
@@ -136,7 +137,7 @@ function distMain(file, margin, outFile, asJson) {
   L.push('');
   if (crude) {
     L.push(`⚠ ${crude}/${total} 对是**差值法**（其中一方没给方位）——它只在两点同向时成立，**不同向会严重低估**。`);
-    L.push('  实测踩过：甲景区与乙景区离某站都约 25km 但方向不同，差值法给 3.5km，实际约 25～28km。');
+    L.push('  实测踩过：莫高窟与鸣沙山离敦煌站都约 25km 但方向不同，差值法给 3.5km，实际约 25～28km。');
     L.push('  **建议给每个景点补上 dir**（N/NE/E/SE/S/SW/W/NW 或角度，如 "SE" 或 135）——给了方位就走余弦定理，结果才可信。');
   } else {
     L.push('✔ 全部成对都用余弦定理算（每个景点都给了方位），结果可信。');
@@ -151,15 +152,17 @@ function distMain(file, margin, outFile, asJson) {
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) { process.stdout.write(HELP); process.exit(0); }
 
-let file = null, startOverride = null, gap = 20, asJson = false, margin = 1.15, outFile = null, mode = 'chain';
+let file = null, startOverride = null, gap = 20, asJson = false, margin = 1.15, outFile = null, mode = 'chain', modeArg = null;
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--start') startOverride = argv[++i];
   else if (a === '--gap') gap = Number(argv[++i]);
   else if (a === '--margin') margin = Number(argv[++i]);
   else if (a === '--out') outFile = argv[++i];
+  else if (a === '--mode') modeArg = argv[++i];
   else if (a === '--json') asJson = true;
   else if (a === 'dist') mode = 'dist';
+  else if (a === 'emit') mode = 'emit';
   else if (!a.startsWith('--')) file = a;
   else { console.error('未知参数: ' + a + '（--help 看用法）'); process.exit(1); }
 }
@@ -173,7 +176,7 @@ try { d = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); }
 catch (e) { console.error('JSON 解析失败: ' + e.message); process.exit(1); }
 
 const start = startOverride || d.start;
-const rawSpots = Array.isArray(d.spots) ? d.spots.map(String) : [];
+const rawSpots = Array.isArray(d.spots) ? d.spots.map((x) => (typeof x === 'string' ? x : (x && x.name ? String(x.name) : String(x)))) : [];
 // 起点若本身就是景点之一，说明用户人已经在那里——它不该再算作"要走一段才能到"的站。
 // 例：--start 故宫、而 spots 里也有故宫时，故宫从待串联列表里移除，避免出现「故宫 ← 故宫 0 km」。
 const spots = rawSpots.filter(s => s !== start);
@@ -235,17 +238,42 @@ while (left.size) {
 const legs = [{ from: start, to: order[0], km: km(start, order[0]) }];
 for (let i = 1; i < order.length; i++) legs.push({ from: order[i - 1], to: order[i], km: km(order[i - 1], order[i]) });
 const total = Math.round(legs.reduce((s, l) => s + l.km, 0) * 10) / 10;
+if (mode === 'emit') {
+  const transMode = modeArg || 'mixed';
+  const modeMap = { bus: '公交+打车', taxi: '全程打车', mixed: '公交+打车' };
+  const oi = argv.indexOf('--out');
+  const outFile = oi >= 0 ? argv[oi + 1] : null;
+  const data = {
+    coverTitle: d.route || (start + ' → ' + order.join(' / ')),
+    coverSubtitle: [d.date ? d.date + ' 出发' : '', d.pax ? d.pax + ' 人' : '', '起点 ' + start].filter(Boolean).join(' · '),
+    coverCards: [
+      ['景点', order.length + ' 个', d.hot ? '含 ' + d.hot + ' 个热门' : '按距离串联'],
+      ['总里程', total + ' km', '直线距离累计'],
+      ['主轴', modeMap[transMode] || '公交+打车', '逐段自行填'],
+    ],
+    overview: {
+      title: '行程总览 · 串线',
+      subtitle: '按最近邻顺序（首站：' + firstWhy + '）',
+      columns: ['序', '地点', '距上一站', '方式', '耗时'],
+      colWidths: [8, 34, 20, 20, 18],
+      rows: [['1', order[0], legs[0].km + ' km', '待填', '待填']].concat(
+        order.slice(1).map((s2, i) => [String(i + 2), s2, legs[i + 1].km + ' km', '待填', '待填'])),
+      note: '里程为直线距离累计，实际以导航为准；方式 / 耗时按实际交通补齐后重新生成页面。',
+    },
+    legs: legs.map((l) => ({ from: l.from, to: l.to, km: l.km })),
+    coverNote: '本次假设：按最近邻串线，逐段交通方式待填（bus / taxi）。',
+    plans: [{ title: '方案 A · 按里程排', mode: transMode, note: '逐段交通方式写进 legs 的 bus / taxi 字段。' }],
+  };
+  const text = JSON.stringify(data, null, 2);
+  if (outFile && outFile !== 'emit') { fs.writeFileSync(outFile, text + '\n', 'utf8'); console.log('已写出 ' + outFile + '（行程页 data.json 骨架）'); }
+  else process.stdout.write(text + '\n');
+  process.exit(0);
+}
 
-// 4. 错峰可行性：相邻两景区间隔是否都 ≤ gap（起点那一段不计入）
-const spotLegs = legs.slice(1);
-const over = spotLegs.filter(l => l.km > gap);
-const gapOk = over.length === 0;
 
 if (asJson) {
   process.stdout.write(JSON.stringify({
     start, first, firstWhy, order, legs, totalKm: total,
-    gapThreshold: gap, gapFeasible: gapOk,
-    overGap: over.map(l => ({ from: l.from, to: l.to, km: l.km })),
   }, null, 1) + '\n');
 } else {
   const L = [];
@@ -258,14 +286,6 @@ if (asJson) {
     L.push(`${String(i + 1).padStart(2)}. ${s}   ← ${leg.from}  ${leg.km} km`);
   });
   L.push(`    返程/末段不计入（本脚本只算景点间串联）`);
-  L.push('');
-  L.push(`== 错峰可行性（阈值 ${gap} km，只看景区之间）==`);
-  if (gapOk) L.push(`  ✅ 成立：相邻景区间隔都 ≤ ${gap} km`);
-  else {
-    L.push(`  ❌ 不成立：有 ${over.length} 段超过 ${gap} km ——`);
-    over.forEach(l => L.push(`     ${l.from} → ${l.to}  ${l.km} km`));
-    L.push(`  → 按 SKILL.md「行程方案规则」，此时**只给最快方案**，并说明原因。`);
-  }
   process.stdout.write(L.join('\n') + '\n');
 }
 process.exit(0);

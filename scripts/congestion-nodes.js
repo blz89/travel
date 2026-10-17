@@ -65,7 +65,7 @@ const hav = (a, b) => {
   return 2 * R * Math.asin(Math.sqrt(x));
 };
 
-// 从「路段原文」切出可定位的地名候选（如「甲镇至乙矿 K697+200—K695+000 段」→ 甲镇 / 乙矿）
+// 从「路段原文」切出可定位的地名候选（如「思林至平果铝 K697+200—K695+000 段」→ 思林 / 平果铝）
 const DROP = /^(路段|段|方向|高速|国道|省道|县道|服务区|停车区|隧道群|隧道|特大桥|大桥|中桥|桥|枢纽|互通|立交|收费站|服务区路|施工|改扩建|拼宽|工程|路段内|境内|附近|一带|沿线|区间|至|到)$/;
 function placeTokens(text) {
   const raw = String(text || '')
@@ -182,7 +182,7 @@ function roadTokensOf(text) {
 function roadsNear(route, km, span = 30) {
   const steps = route.steps || [];
   // s.km 是该段**末端**累计里程：几十公里不换路的长 step 会跨过查询点、却不满足 |s.km-km|<=span，
-  // 于是窗口取空 → 本线 token 为空 → 压线记录被**误判成平行线**剔除（真丢点，如 G9112 辰市段）。
+  // 于是窗口取空 → 本线 token 为空 → 压线记录被**误判成平行线**剔除（真丢点，如 G45 衡水段）。
   // 所以按 step 覆盖区间 [km-dist-span, km+span] 取，真取不到再退回“里程最近的 3 个 step”。
   let pick = steps.filter(s => (s.km - (s.dist || 0) - span) <= km && (s.km + span) >= km);
   if (!pick.length) pick = steps.slice().sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km)).slice(0, 3);
@@ -343,7 +343,7 @@ async function main() {
   }
   if (!routeFile) { console.error('用法: congestion-nodes.js <route.json> [--date YYYY-MM-DD] [--out nodes.json] [--top 3] [--max-off 15] [--debug] [--json] [--quiet] [--marks marks.json]'); process.exit(1); }
   if (!fs.existsSync(routeFile)) { console.error('线路文件不存在: ' + routeFile); process.exit(1); }
-  if (!KEY) { console.error('缺少 AMAP_KEY（只从环境变量读，本脚本不写 key）'); process.exit(1); }
+  if (!KEY) { console.error('缺少 AMAP_KEY（只从环境变量读，本脚本不写 key）——没有 key 时**不要卡住**：① 用 `traffic-history.js --match` 的库结论列出被点名路段；② 用 `map-shot.js link` 出免 key 的地图链接 + 截图；③ 把节点排名写成「按库结论人工排序，未做取线校验」如实交付（见 references/driving-route-planning.md §5 末尾）'); process.exit(1); }
   if (!fs.existsSync(LIB)) { console.error('结论库不存在: ' + LIB); process.exit(1); }
 
   const spec = JSON.parse(fs.readFileSync(routeFile, 'utf8').replace(/^\uFEFF/, ''));
@@ -383,7 +383,7 @@ async function main() {
     // 待人工确认：① 用了裸地名定位（可能撞同名村庄）② 跨段记录只有一端落在线附近（另一端 >2 倍阈值）
     const far = proj.length === 2 && (Math.max(...proj.map(p => p.off)) > maxOff * 2);
     const needsReview = proj.some(p => p.weak) || far;
-    // 路由核对：优先用**锚点自带的道路名**（如「某县收费站(G9101某高速出口)」）与记录的路名比；
+    // 路由核对：优先用**锚点自带的道路名**（如「沙县收费站(G25长深高速出口)」）与记录的路名比；
     // 锚点没带路名（裸地名）时，退回用本线 instruction 里该里程实际走的高速比。
     const rTok = roadTokensOf(r.road);
     const bIdx = proj.findIndex(p => p.off === best.off);
@@ -391,7 +391,7 @@ async function main() {
     let roadMismatch = false;
     if (best.off <= maxOff) {
       // 必须**同时**满足两条：① 锚点自带路名与记录一致 ② **本线该里程实际走的高速**也要与记录一致
-      // （只比 ① 会漏掉"锚点与记录同为 G9105、但我们实际在平行 S9110 上跑"这种假压线）
+      // （只比 ① 会漏掉"锚点与记录同为 G80、但我们实际在平行 S52 上跑"这种假压线）
       const routeOk = roadMatches(r.road, roadsNear(route, best.km));
       const anchorOk = (aTok.codes.size || aTok.names.size)
         ? ([...aTok.codes].some(c => rTok.codes.has(c)) || [...aTok.names].some(n => rTok.names.has(n)))
@@ -487,16 +487,16 @@ async function main() {
 }
 
 function selfcheck() {
-  const t1 = placeTokens('甲镇至乙矿 K697+200—K695+000 段');
+  const t1 = placeTokens('思林至平果铝 K697+200—K695+000 段');
   const t2 = placeTokens('桂林北互通立交至僚田互通立交段');
   const t3 = placeTokens('泉州南安（泉州往三明）');
   const has = (arr, s) => arr.some(x => x.includes(s));
-  const okTokens = has(t1, '甲镇') && has(t1, '乙矿') && has(t2, '桂林北') && has(t2, '僚田') && has(t3, '南安');
+  const okTokens = has(t1, '思林') && has(t1, '平果铝') && has(t2, '桂林北') && has(t2, '僚田') && has(t3, '南安');
   const items = [
-    { year: 2021, holiday: '国庆', road: 'G9101 甲高速', segment: 'A', km: 100, off: 1 },
-    { year: 2022, holiday: '春节', road: 'G9101 甲高速', segment: 'A2', km: 110, off: 1 },
-    { year: 2026, holiday: '国庆', road: 'G9101 甲高速', segment: 'B', km: 130, off: 2 },
-    { year: 2026, holiday: '国庆', road: 'G9102 乙高速', segment: 'C', km: 105, off: 40 },
+    { year: 2021, holiday: '国庆', road: 'G72 泉南高速', segment: 'A', km: 100, off: 1 },
+    { year: 2022, holiday: '春节', road: 'G72 泉南高速', segment: 'A2', km: 110, off: 1 },
+    { year: 2026, holiday: '国庆', road: 'G72 泉南高速', segment: 'B', km: 130, off: 2 },
+    { year: 2026, holiday: '国庆', road: 'G80 广昆高速', segment: 'C', km: 105, off: 40 },
   ];
   const nodes = rankNodes(clusterNodes(items, { maxOff: 15 }), 2026);
   const on = nodes.filter(n => n.onRoute).sort((a, b) => a.rank - b.rank);

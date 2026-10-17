@@ -23,7 +23,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const CACHE_DIR = path.join(__dirname, '.flight_cache');
+// 缓存放 %TEMP%\travel-cache\flight（不再写技能目录）；需要指定位置时设 FLIGHT_CACHE_DIR
+const CACHE_DIR = process.env.FLIGHT_CACHE_DIR || path.join(process.env.TEMP || process.env.TMP || __dirname, 'travel-cache', 'flight');
 const ROUTES_URL = 'https://raw.githubusercontent.com/jpatokal/openflights/master/data/routes.dat';
 const AIRPORTS_URL = 'https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat';
 
@@ -42,7 +43,7 @@ const CN_CITY_AIRPORTS = {
   '香港': ['HKG'], '澳门': ['MFM'], '台北': ['TPE', 'TSA'], '高雄': ['KHH'],
 };
 
-// 补充机场表：OpenFlights 的 airports.dat 对中国机场覆盖不全（实测缺 某地 YZY、某地 JGN、
+// 补充机场表：OpenFlights 的 airports.dat 对中国机场覆盖不全（实测缺 张掖 YZY、嘉峪关 JGN、
 // 敦煌 DNH 等，一给三字码就报“无法识别”）。这里内置一份“城市 → 三字码”补充，并给出机场名。
 // ⚠ 本表只用于**给出候选三字码**；是否存在该机场、有无航班，仍以实时查询为准。
 const CN_AIRPORTS_EXTRA = {
@@ -91,10 +92,18 @@ const AIRLINE_CN = {
 };
 function airlineLabel(code) { return AIRLINE_CN[code] ? `${code}(${AIRLINE_CN[code]})` : code; }
 
-async function fetchText(url) {
-  const res = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(60000) });
+const FETCH_TIMEOUT_MS = 20000;   // 拉不下来就别干等（raw.githubusercontent 在部分网络下不可达）
+async function fetchOnce(url) {
+  const res = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}: ${url}`);
   return await res.text();
+}
+async function fetchText(url) {
+  let lastErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try { return await fetchOnce(url); } catch (e) { lastErr = e; if (attempt === 1) await new Promise((r) => setTimeout(r, 800)); }
+  }
+  throw lastErr;
 }
 
 function cachePath(name) { return path.join(CACHE_DIR, name); }
@@ -168,7 +177,7 @@ function resolveAirports(input, airports) {
   const raw = input.trim();
   if (/^[A-Za-z]{3}$/.test(raw)) {
     // 三字码一律接受——**不能因为开源库没收录就报"无法识别"**
-    // （实测：某地 YZY、某地 JGN、某地 DNH 都在 airports.dat 里，但某市天府 TFU 不在；
+    // （实测：张掖 YZY、嘉峪关 JGN、敦煌 DNH 都在 airports.dat 里，但成都天府 TFU 不在；
     //   若按库判定，TFU 会被误报成"这地方没机场"）。
     // 该码是否被本库收录、有无航线记录，全部交给 route 命令按下面的口径另行说明。
     return [raw.toUpperCase()];
@@ -217,7 +226,7 @@ function airportLabel(code, airports) {
       '    2019 年启用，而本库航线数据停在 2014 年）。两种都必须改用 web_search 查实时航班（**含中转**）。',
       '  · 多机场城市（北京 PEK/PKX、上海 SHA/PVG、成都 CTU/TFU）**要逐个机场核**，本库常只收录了其中一个。',
       '',
-      '缓存: 数据首次运行自动下载，缓存 30 天（scripts/.flight_cache/）。',
+      '缓存: 数据首次运行自动下载，缓存 30 天（%TEMP%\\travel-cache\\flight；可用 FLIGHT_CACHE_DIR 覆盖）。',
       '退出码: 0 = 成功；1 = 参数错误 / 无法识别机场。',
       '',
       '注意: 不要读本脚本源码——用 --help 就够了。',
@@ -327,4 +336,14 @@ function airportLabel(code, airports) {
 
   console.error('未知命令: ' + cmd + '\n用法:\n  node flight.js route <出发> <到达>\n  node flight.js airport <关键词>\n  node flight.js cities');
   process.exit(1);
-})().catch((e) => { console.error('ERROR: ' + e.message); process.exit(1); });
+})().catch((e) => {
+  const msg = String(e && e.message || e);
+  if (/fetch failed|aborted|timeout|ENOTFOUND|ECONN|HTTP \d{3}/i.test(msg)) {
+    console.error('ERROR: 航线库拉取失败（' + msg + '）——本库只是"有没有直飞"的加速器，拉不到不影响出方案。');
+    console.error('RETRY_HINT=network —— 改用 web_search 查「<出发城市> 到 <目的地城市> 航班 时刻 机票」，拿到具体航班号后照常出空中方案；');
+    console.error('判据仍是「能否给出航班号」，不要把"库没拉到"当成"没有航班"。');
+  } else {
+    console.error('ERROR: ' + msg);
+  }
+  process.exit(1);
+});

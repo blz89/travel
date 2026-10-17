@@ -26,8 +26,9 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const zlib = require('node:zlib');
 
-const DATA = path.join(__dirname, '..', 'data', 'china-travel', 'attractions.json');
+const DATA = path.join(__dirname, '..', 'data', 'china-travel', 'attractions.json'); // .json 或 .json.gz
 const CITIES = ['北京', '成都', '重庆', '广州', '杭州', '南京', '上海', '深圳', '苏州', '武汉'];
 
 const HELP = [
@@ -43,14 +44,19 @@ const HELP = [
   '',
   '边界: 开放时间为常规时段口径，旺季/节假日会调整 —— 仍须按技能规则以景区官网公告核对。',
   '数据: LAMDA-NeSy/ChinaTravel-Sandbox · CC BY 4.0（署名见 data/china-travel/README.md）',
+  '      文件：data/china-travel/attractions.json.gz（gzip，约 78 KB；解压 1ms，优先读未压缩 .json 若存在）',
   '',
   '注意: 不要读本脚本源码——用 --help 就够了。',
 ].join('\n');
 
 function load() {
+  // 数据只在真正查询时读一次，不常驻。
+  // 发行包里是 attractions.json.gz（78KB 左右，gzip 后约为 JSON 的 15%）；
+  // 开发时把未压缩的 attractions.json 放回来也能直接跑（优先读 .json）。
   try {
-    // 数据文件 ~560KB；只在真正查询时读一次，不常驻
-    return JSON.parse(fs.readFileSync(DATA, 'utf8'));
+    if (fs.existsSync(DATA)) return JSON.parse(fs.readFileSync(DATA, 'utf8'));
+    if (fs.existsSync(DATA + '.gz')) return JSON.parse(zlib.gunzipSync(fs.readFileSync(DATA + '.gz')).toString('utf8'));
+    return null;
   } catch (e) {
     return null;
   }

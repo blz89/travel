@@ -13,7 +13,7 @@
  *
  * 效率选项（重要）：
  *   --brief   精简输出：tickets 每车次一行（车次/发到/历时/**全部席别的票价与余票**，普速含硬座硬卧、高铁含二等/一等/商务），
- *             大枢纽线路全量 JSON 可达数百 KB（如大站间线路 444 车次 264KB），
+ *             大枢纽线路全量 JSON 可达数百 KB（如 广州南→虎门 444 车次 264KB），
  *             全量读回极烧 token——优先用 --brief 看概要，确需全量再加 --out 落盘后按需提取。
  *             示例: node 12306.js tickets 广州南 虎门 2026-09-06 --brief
  *   --from HH:MM --to HH:MM  仅与 --brief 搭配：按发车时间窗过滤（如 --from 08:00 --to 12:00），
@@ -38,10 +38,36 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const HAS_BRIEF = process.argv.includes('--brief');
+// --digest：比 --brief 更紧的 5 列摘要（车次 / 发→到时刻 / 历时 / 最便宜席别票价 / 该席别余票）——
+// 只用于「看一眼有哪些车」，要喂 plan.js 仍用 --brief（它解析 brief 行）
+const HAS_DIGEST = process.argv.includes('--digest');
+// 出行日期前置校验：非法日期 / 已过去 / 超出 15 天预售期，都不要去打网络
+// （实测踩过：超预售期会被 12306 判 302 风控，白等 1.4–11.5s 还报"换端点重试"，误导执行者）
+function checkTravelDate(d, label) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new Error(`${label || '日期'}格式应为 YYYY-MM-DD（收到 "${d}"）`);
+  const t = Date.parse(d + 'T00:00:00Z');
+  if (!Number.isFinite(t) || new Date(t).toISOString().slice(0, 10) !== d) throw new Error(`${label || '日期'}不存在："${d}" —— 检查月份天数（如 2 月 29 日只在闰年有）`);
+  const now = new Date();
+  const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((t - todayUTC) / 86400000);
+  if (days < 0) throw new Error(`${label || '日期'}已过去："${d}"`);
+  if (days > 15) {
+    const max = new Date(todayUTC + 15 * 86400000).toISOString().slice(0, 10);
+    throw new Error(`超出 12306 预售期："${d}" 还没开卖（今天起 15 天内，最晚可查 ${max}）——换一个日期，或等放票后再查；这不是网络/风控问题，重试没有用`);
+  }
+}
+function checkHHMM(v, label) {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v))) throw new Error(`${label} 需要 HH:MM（00:00–23:59，如 08:00），收到 "${v}"`);
+}
 const hasOpt = (name) => { const i = process.argv.indexOf(name); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : null; };
+const NO_CACHE = process.argv.includes('--no-cache');
+const REFRESH = process.argv.includes('--refresh');
 const OUT_FILE = hasOpt('--out');
 const TIME_FROM = hasOpt('--from'); // HH:MM，仅 --brief 生效
 const TIME_TO = hasOpt('--to');
+if (TIME_FROM) checkHHMM(opt('--from'), '--from');
+if (TIME_TO) checkHHMM(opt('--to'), '--to');
+if (TIME_FROM && TIME_TO && opt('--from') >= opt('--to')) throw new Error(`--from（${opt('--from')}）必须早于 --to（${opt('--to')}）`);
 
 // 输出：默认 stdout；若命令行带 --out <文件> 则写 UTF-8 文件（Windows 重定向会变 UTF-16，需用此选项）
 // ⚠ 目录不存在时**自动建**（实测踩过：`--out 中间数据/xxx.txt` 报 ENOENT，
@@ -74,8 +100,13 @@ function emitBrief(header, trains) {
     });
   }
   const lines = [];
-  lines.push(`# ${header.from.name} → ${header.to.name}  ${header.date}  窗口内 ${list.length}/${trains.length} 车次（--brief 精简，含全部席别票价/余票）`);
-  lines.push('# 车次  发站→到站  发时→到时[(+1天)=跨天到达/车上过夜]  历时  席别票价/余票（价格单位元）');
+  if (HAS_DIGEST) {
+    lines.push(`# ${header.from.name} → ${header.to.name}  ${header.date}  窗口内 ${list.length}/${trains.length} 车次（--digest 摘要：最便宜席别一行）`);
+    lines.push('# 车次  发时→到时  历时  最便宜席别票价  余票');
+  } else {
+    lines.push(`# ${header.from.name} → ${header.to.name}  ${header.date}  窗口内 ${list.length}/${trains.length} 车次（--brief 精简，含全部席别票价/余票）`);
+    lines.push('# 车次  发站→到站  发时→到时[(+1天)=跨天到达/车上过夜]  历时  席别票价/余票（价格单位元）');
+  }
   for (const t of list) {
     const p = t.prices || {};
     const s = t.seats || {};
@@ -91,17 +122,32 @@ function emitBrief(header, trains) {
     }
     // 跨天到达（到达时刻不晚于发车时刻）= 车上过夜 → 供「席别规则 → 普速席别顺序」的"长途普速"判据，以及「方案生成 → 过夜 / 住宿一律标红」确定性判定
     const nextDay = !!(t.start_time && t.arrive_time && t.arrive_time <= t.start_time);
-    lines.push(`${t.train_code}  ${t.from_station}→${t.to_station}  ${t.start_time}→${t.arrive_time}${nextDay ? '(+1天)' : ''}  ${t.duration}  ${parts.join(' ')}`);
+    if (HAS_DIGEST) {
+      // 取价格最低的席别（全 '-' 时退化为第一个），只留 5 列
+      let pick = null;
+      for (const [, label] of SEAT_FIELDS) {
+        const pr = p[label];
+        if (pr === undefined || pr === null) continue;
+        if (!pick || Number(pr) < Number(pick.pr)) pick = { label, pr, st: (s[label] !== undefined && s[label] !== '' ? s[label] : '-') };
+      }
+      const cell = pick ? `${pick.label} ¥${pick.pr}` : '-';
+      const rest = pick ? pick.st : '-';
+      lines.push(`${t.train_code}  ${t.start_time}→${t.arrive_time}${nextDay ? '(+1天)' : ''}  ${t.duration}  ${cell}  ${rest}`);
+    } else {
+      lines.push(`${t.train_code}  ${t.from_station}→${t.to_station}  ${t.start_time}→${t.arrive_time}${nextDay ? '(+1天)' : ''}  ${t.duration}  ${parts.join(' ')}`);
+    }
   }
   const text = lines.join('\n') + '\n';
   if (OUT_FILE) { ensureOutDir(OUT_FILE); fs.writeFileSync(OUT_FILE, text, 'utf8'); console.error('已写入(精简): ' + OUT_FILE); }
   else process.stdout.write(text);
 }
 
-// 站表缓存：station_name.js 每次下载约 137KB，缓存到脚本同目录 .stations_cache.json（7 天有效）
+// 站表缓存：station_name.js 每次下载约 137KB，缓存到 CACHE_DIR（%TEMP%\travel-cache）下的 .stations_cache.json（7 天有效）
 // 实测该表保鲜度很高（上游常 2 天内才更新一次），24h 太保守——放宽到 7 天可省掉大部分重复下载。
 // 缓存目录可被环境变量覆盖（仅为测试隔离；生产不设置时即脚本同目录）
-const CACHE_DIR = process.env.RAIL_CACHE_DIR || __dirname;
+// 默认落在 %TEMP%\travel-cache（不再写技能目录）；需要指定位置时设 RAIL_CACHE_DIR
+const CACHE_DIR = process.env.RAIL_CACHE_DIR || path.join(process.env.TEMP || process.env.TMP || __dirname, 'travel-cache');
+function ensureCacheDir() { try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch { /* 建不成就退回不缓存 */ } }
 function stationCachePath() { return path.join(CACHE_DIR, '.stations_cache.json'); }
 function loadStationCache() {
   try {
@@ -114,7 +160,7 @@ function loadStationCache() {
 }
 function saveStationCache(stations) {
   try {
-    fs.writeFileSync(stationCachePath(), JSON.stringify([...stations.values()]), 'utf8');
+    ensureCacheDir(); fs.writeFileSync(stationCachePath(), JSON.stringify([...stations.values()]), 'utf8');
   } catch { /* 缓存失败不影响主流程 */ }
 }
 
@@ -265,6 +311,7 @@ class ResponseLike {
 async function requestWithRotation(buildUrl, { jar, referer, timeout, endpoints = ['queryG', 'queryO', 'queryZ', 'queryA'] } = {}) {
   const queue = [...endpoints];
   const tried = new Set();
+  const blocked = [];
   let lastDiag = '未知原因';
   while (queue.length) {
     const ep = queue.shift();
@@ -274,10 +321,20 @@ async function requestWithRotation(buildUrl, { jar, referer, timeout, endpoints 
     if (redirect) {
       const rotated = extractQueryEndpoint({ body: text, location });
       if (rotated) { queue.unshift(rotated); lastDiag = `端点 ${ep} 返回 302，官方提示改用 ${rotated}`; continue; }
-      // 302 但解析不出合法端点 → 真风控（通常是 error.html）
-      throw new RateLimitError(`端点 ${ep} 返回 302 且未给出可用端点（疑似风控）`);
+      // 302 但解析不出合法端点：实测同一时刻换端点往往能过（queryG 被拦 ≠ queryO/Z/A 也被拦）。
+      // 从前这里直接抛「疑似风控」，一次 302 就整条线路查不到票（白跑一轮，还会被误当"无票"）。
+      // 现在：记诊断 → 退避 300–800ms → 继续试队列里剩下的端点；全都 302 才判失败。
+      lastDiag = `端点 ${ep} 返回 302 且未给出可用端点`;
+      blocked.push(ep);
+      if (queue.length) await new Promise(r => setTimeout(r, 300 + Math.floor(Math.random() * 500)));
+      continue;
     }
     return { endpoint: ep, res, text };
+  }
+  if (blocked.length) {
+    const err = new RateLimitError(`以下端点均返回 302 且未给出可用端点：${blocked.join(' / ')}（疑似风控；已逐个换端点重试过）`);
+    err.retryHint = 'network_guard';
+    throw err;
   }
   throw new WireChangedError(`已尝试端点 ${[...tried].join('/')}，均未取得数据（${lastDiag}）——12306 接口名可能已更换`);
 }
@@ -307,8 +364,29 @@ function writeNegCache(key, info) {
     c[key] = { at: Date.now(), ...info };
     // 清过期 + 限长（按时间保留最近的 NEG_MAX 条）
     const alive = Object.entries(c).filter(([, v]) => Date.now() - v.at <= NEG_TTL_MS).slice(-NEG_MAX);
-    fs.writeFileSync(negCachePath(), JSON.stringify(Object.fromEntries(alive)), 'utf8');
+    ensureCacheDir(); fs.writeFileSync(negCachePath(), JSON.stringify(Object.fromEntries(alive)), 'utf8');
   } catch { /* 缓存失败不影响主流程 */ }
+}
+
+// ---- 正向 tickets 缓存：同 OD + 同日期在 TTL 内直接复用（回转 / 前后对比不重打 12306）----
+const TICKET_TTL_MS = 120 * 1000;   // 2 分钟（余票会变，别设太长）
+const TICKET_MAX = 60;              // 上限，防止文件无限增长
+function ticketsCachePath() { return path.join(CACHE_DIR, '.tickets_cache.json'); }
+function loadTicketsCache() {
+  try { return JSON.parse(fs.readFileSync(ticketsCachePath(), 'utf8')) || {}; } catch { return {}; }
+}
+function readTicketsCache(key) {
+  const hit = loadTicketsCache()[key];
+  if (!hit) return null;
+  if (Date.now() - hit.at > TICKET_TTL_MS) return null;
+  return hit;
+}
+function writeTicketsCache(key, header, merged) {
+  const c = loadTicketsCache();
+  c[key] = { at: Date.now(), header, merged };
+  const alive = Object.entries(c).sort((a, b) => b[1].at - a[1].at).slice(0, TICKET_MAX);
+  ensureCacheDir();
+  try { fs.writeFileSync(ticketsCachePath(), JSON.stringify(Object.fromEntries(alive)), 'utf8'); } catch { /* 写不成就当没缓存 */ }
 }
 
 async function bootstrapSession() {
@@ -367,7 +445,13 @@ async function resolveStation(stations, input) {
     throw new Error(`未知车站代码: ${input}`);
   }
   const hits = searchStations(stations, input);
-  if (hits.length === 0) throw new Error(`未找到车站: ${input}`);
+  if (hits.length === 0) {
+    // 英文 / 拼音地名：给一条可执行的下一步，别让调用方在 0 结果里瞎猜
+    const aliasHint = /[a-zA-Z]/.test(input)
+      ? `\n提示：输入像英文/拼音地名 —— 先跑 node scripts/alias.js resolve --name "${input}" 归一化成中文再查`
+      : '';
+    throw new Error(`未找到车站: ${input}${aliasHint}`);
+  }
   // 精确名优先
   const exact = hits.find((h) => h.name === input);
   if (exact) return exact;
@@ -463,6 +547,10 @@ function parsePrices(data) {
 async function cmdStations(stations, kw) {
   const hits = searchStations(stations, kw);
   emit({ count: hits.length, stations: hits });
+  // 英文 / 拼音地名：0 结果时给一条可执行的下一步
+  if (!hits.length && /[a-zA-Z]/.test(String(kw))) {
+    console.error(`提示："${kw}" 像英文/拼音地名 —— 先跑 node scripts/alias.js resolve --name "${kw}" 归一化成中文再查`);
+  }
 }
 
 async function cmdTickets(stations, from, to, date) {
@@ -477,9 +565,22 @@ async function cmdTickets(stations, from, to, date) {
   if (neg) {
     const header = { from: { code: sFrom.code, name: sFrom.name }, to: { code: sTo.code, name: sTo.name }, date };
     console.error(`[负缓存] ${sFrom.name}→${sTo.name} ${date} ${Math.round((Date.now() - neg.at) / 60000)} 分钟前已确认无车，直接返回（不重查）`);
-    if (HAS_BRIEF) { emitBrief(header, []); return; }
+    if (HAS_BRIEF || HAS_DIGEST) { emitBrief(header, []); return; }
     emit({ ...header, count: 0, trains: [], note: '负缓存命中：该 OD 当日已确认无车次，未重复查询' });
     return;
+  }
+
+  // 0.5) 正向缓存：TTL 内同 OD 同日期直接复用（--refresh 强制重查，--no-cache 完全关闭）
+  const tkey = `tickets|${sFrom.code}|${sTo.code}|${date}`;
+  if (!NO_CACHE && !REFRESH) {
+    const hit = readTicketsCache(tkey);
+    if (hit) {
+      const age = Math.round((Date.now() - hit.at) / 1000);
+      console.error(`[缓存] ${sFrom.name}→${sTo.name} ${date} 命中 ${age} 秒前的查询结果（TTL ${Math.round(TICKET_TTL_MS / 1000)}s，加 --refresh 可强制重查）`);
+      if (HAS_BRIEF || HAS_DIGEST) { emitBrief(hit.header, hit.merged); return; }
+      emit({ ...hit.header, count: hit.merged.length, trains: hit.merged });
+      return;
+    }
   }
 
   const jar = await bootstrapSession();
@@ -525,7 +626,8 @@ async function cmdTickets(stations, from, to, date) {
   });
 
   const header = { from: { code: sFrom.code, name: sFrom.name }, to: { code: sTo.code, name: sTo.name }, date };
-  if (HAS_BRIEF) {
+  if (!NO_CACHE) writeTicketsCache(tkey, header, merged);
+  if (HAS_BRIEF || HAS_DIGEST) {
     emitBrief(header, merged);
     return;
   }
@@ -581,7 +683,7 @@ const HELP = [
   '',
   '用法:',
   '  node scripts/12306.js stations <关键词>',
-  '  node scripts/12306.js tickets <出发> <到达> [日期] [--brief] [--out <文件>]',
+  '  node scripts/12306.js tickets <出发> <到达> [日期] [--brief|--digest] [--out <文件>] [--refresh] [--no-cache]',
   '  node scripts/12306.js transfer <出发> <到达> [日期]',
   '',
   '  stations   搜车站。支持中文 / 拼音 / 简拼 / 三字码。输出很小，可直接读。',
@@ -590,6 +692,9 @@ const HELP = [
   '             必须自己枚举沿途枢纽逐腿拼（见 SKILL.md「12306.js 用法」）。',
   '',
   '选项:',
+  '  --refresh        忽略正向缓存、强制重查（余票可能刚变过）；--no-cache 关闭正/负缓存的读写',
+  '  正向缓存：同「出发站 + 到达站 + 日期」2 分钟内复用上次结果（%TEMP%\\travel-cache\\.tickets_cache.json），',
+  '           命中时 stderr 打 [缓存] 并秒回；只缓存成功结果，风控/报错不写。',
   '  --brief          精简输出：每车次一行（车次 / 发站→到站 / 发时→到时 / 跨天标记 (+1天) /',
   '                   历时 / 全部席别的票价与余票）。**日常查询一律加这个。**',
   '  --out <文件>     结果写入文件（脚本自己用 utf8 写；不要用 PowerShell 的 > 重定向，会变 UTF-16）',
@@ -598,7 +703,7 @@ const HELP = [
   '  --help, -h       显示本说明',
   '',
   '输出:',
-  '  默认全量 JSON（大枢纽可达数百 KB，**严禁整文件读回**）；--brief 为每车次一行。',
+  '  默认全量 JSON（大枢纽可达数百 KB，**严禁整文件读回**）；--brief 为每车次一行（含全部席别）；--digest 为 5 列摘要（车次/时刻/历时/最便宜席别票价/余票），只想看有哪些车时用它。',
   '  seat 字段取值：数字 = 剩余张数；"有" = 充足；"无" = 无票；空 / 缺 = 该席别不售。',
   '',
   '退出码: 0 = 成功；1 = 参数错误或查询失败（如被限流）。',
@@ -607,6 +712,8 @@ const HELP = [
   '  · 必须用 node 运行（不要用 PowerShell 的 Invoke-WebRequest / curl）。',
   '  · 同一线路只查一次；短时间多次查询会触发 12306 按 IP 限流。',
   '  · 站表已做 7 天本地缓存，无需担心重复下载。',
+  '  · 负缓存：只缓存「确定性空结果」（该方向确实没有车次），TTL 20 分钟、最多 300 条，落 %TEMP%\\travel-cache\\.neg_cache.json；',
+  '    **被限流 / 风控拦下的失败不写负缓存**——别把一次失败当成"无车次"。',
   '  · 不要读本脚本源码——它可能很大，会污染上下文。用 --help 就够了。',
 ].join('\n') + '\n';
 if (process.argv.includes('--help') || process.argv.includes('-h')) { process.stdout.write(HELP); process.exit(0); }
@@ -621,7 +728,7 @@ const USAGE = [
   // 剔除选项（--out <文件> / --brief / --from <t> / --to <t>）后得到位置参数
   const rawArgs = process.argv.slice(2);
   const OPT_WITH_VALUE = new Set(['--out', '--from', '--to']);
-  const OPT_FLAG = new Set(['--brief']);
+const OPT_FLAG = new Set(['--brief', '--digest', '--refresh', '--no-cache']);
   const positional = [];
   for (let i = 0; i < rawArgs.length; i++) {
     if (OPT_WITH_VALUE.has(rawArgs[i])) { i++; continue; }
@@ -646,13 +753,14 @@ const USAGE = [
     case 'tickets': {
       if (args.length < 2) throw new Error('用法: node 12306.js tickets <出发> <到达> [YYYY-MM-DD]');
       const date = args[2] || defaultDate;
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('日期格式应为 YYYY-MM-DD');
+      checkTravelDate(date, '日期');
       await cmdTickets(stations, args[0], args[1], date);
       break;
     }
     case 'transfer': {
       if (args.length < 2) throw new Error('用法: node 12306.js transfer <出发> <到达> [YYYY-MM-DD]');
       const date = args[2] || defaultDate;
+      checkTravelDate(date, '日期');
       await cmdTransfer(stations, args[0], args[1], date);
       break;
     }

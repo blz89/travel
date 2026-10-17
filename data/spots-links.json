@@ -1,0 +1,66 @@
+{
+  "西湖": {
+    "intro": "https://westlake.hangzhou.gov.cn/col/col1598539/art/2025/art_c44b71292ad0495ea2f1b884e10ebac2.html",
+    "grade": "A",
+    "fact": 16,
+    "imgs": 14,
+    "ratio": 22.8,
+    "reason": "要点16 图14 ratio22.8",
+    "checkedAt": "2026-10-17"
+  },
+  "兵马俑": {
+    "intro": "https://www.bmy.com.cn/about",
+    "grade": "A",
+    "fact": 25,
+    "imgs": 24,
+    "ratio": 10.2,
+    "reason": "要点25 图24 ratio10.2",
+    "checkedAt": "2026-10-17"
+  },
+  "黄山": {
+    "intro": "https://www.ah.gov.cn/hfwy/dmah/ssfg/565493261.html",
+    "grade": "A",
+    "fact": 14,
+    "imgs": 5,
+    "ratio": 11.8,
+    "reason": "要点14 图5 ratio11.8",
+    "checkedAt": "2026-10-17"
+  },
+  "莫高窟": {
+    "intro": "https://www.dha.ac.cn/info/1021/5490.htm",
+    "grade": "A",
+    "fact": 23,
+    "imgs": 14,
+    "ratio": 117,
+    "reason": "要点23 图14 ratio117",
+    "checkedAt": "2026-10-17"
+  },
+  "故宫": {
+    "intro": "http://www.rmhb.com.cn/yxsj/sy/202510/t20251031_800420745.html",
+    "grade": "A",
+    "fact": 15,
+    "imgs": 15,
+    "ratio": 16.4,
+    "reason": "要点15 图15 ratio16.4",
+    "checkedAt": "2026-10-17"
+  },
+  "张家界": {
+    "intro": "",
+    "grade": "F",
+    "fact": 0,
+    "imgs": 0,
+    "ratio": 0,
+    "reason": "候选里没有\"要点式介绍页\"",
+    "checkedAt": "2026-10-17"
+  },
+  "武陵源": {
+    "intro": "http://www.hnzjj.com/index.php/Article/list/11.html",
+    "grade": "A",
+    "fact": 28,
+    "imgs": 36,
+    "ratio": 11,
+    "reason": "要点28 图36 ratio11",
+    "source": "官网",
+    "checkedAt": "2026-10-17"
+  }
+}

@@ -1,0 +1,439 @@
+{
+  "_note": "英文 / 拼音地名归一化表（人工维护）。键 = 小写拼音或英文常见写法（去空格/撇号/连字符后），值 = 候选中文名数组：单个 = 直接用；多个 = 有歧义，需客户确认一次。站名可带方位（north/south/east/west + station），脚本会自动拼成「广州南」这类站名。",
+  "cities": {
+    "beijing": [
+      "北京"
+    ],
+    "peking": [
+      "北京"
+    ],
+    "shanghai": [
+      "上海"
+    ],
+    "tianjin": [
+      "天津"
+    ],
+    "chongqing": [
+      "重庆"
+    ],
+    "guangzhou": [
+      "广州"
+    ],
+    "canton": [
+      "广州"
+    ],
+    "shenzhen": [
+      "深圳"
+    ],
+    "zhuhai": [
+      "珠海"
+    ],
+    "foshan": [
+      "佛山"
+    ],
+    "dongguan": [
+      "东莞"
+    ],
+    "zhongshan": [
+      "中山"
+    ],
+    "huizhou": [
+      "惠州"
+    ],
+    "shantou": [
+      "汕头"
+    ],
+    "jiangmen": [
+      "江门"
+    ],
+    "zhanjiang": [
+      "湛江"
+    ],
+    "zhaoqing": [
+      "肇庆"
+    ],
+    "hangzhou": [
+      "杭州"
+    ],
+    "ningbo": [
+      "宁波"
+    ],
+    "wenzhou": [
+      "温州"
+    ],
+    "jiaxing": [
+      "嘉兴"
+    ],
+    "huzhou": [
+      "湖州"
+    ],
+    "shaoxing": [
+      "绍兴"
+    ],
+    "jinhua": [
+      "金华"
+    ],
+    "yiwu": [
+      "义乌"
+    ],
+    "taizhou": [
+      "台州",
+      "泰州"
+    ],
+    "quzhou": [
+      "衢州"
+    ],
+    "zhoushan": [
+      "舟山"
+    ],
+    "nanjing": [
+      "南京"
+    ],
+    "nanking": [
+      "南京"
+    ],
+    "suzhou": [
+      "苏州",
+      "宿州"
+    ],
+    "wuxi": [
+      "无锡"
+    ],
+    "changzhou": [
+      "常州"
+    ],
+    "nantong": [
+      "南通"
+    ],
+    "xuzhou": [
+      "徐州"
+    ],
+    "yangzhou": [
+      "扬州"
+    ],
+    "zhenjiang": [
+      "镇江"
+    ],
+    "yancheng": [
+      "盐城"
+    ],
+    "huaian": [
+      "淮安"
+    ],
+    "lianyungang": [
+      "连云港"
+    ],
+    "hefei": [
+      "合肥"
+    ],
+    "wuhu": [
+      "芜湖"
+    ],
+    "huangshan": [
+      "黄山"
+    ],
+    "bengbu": [
+      "蚌埠"
+    ],
+    "anqing": [
+      "安庆"
+    ],
+    "fuzhou": [
+      "福州",
+      "抚州"
+    ],
+    "xiamen": [
+      "厦门"
+    ],
+    "amoy": [
+      "厦门"
+    ],
+    "quanzhou": [
+      "泉州"
+    ],
+    "zhangzhou": [
+      "漳州"
+    ],
+    "putian": [
+      "莆田"
+    ],
+    "longyan": [
+      "龙岩"
+    ],
+    "nanchang": [
+      "南昌"
+    ],
+    "jingdezhen": [
+      "景德镇"
+    ],
+    "jiujiang": [
+      "九江"
+    ],
+    "ganzhou": [
+      "赣州"
+    ],
+    "shangrao": [
+      "上饶"
+    ],
+    "jinan": [
+      "济南"
+    ],
+    "qingdao": [
+      "青岛"
+    ],
+    "tsingtao": [
+      "青岛"
+    ],
+    "yantai": [
+      "烟台"
+    ],
+    "weihai": [
+      "威海"
+    ],
+    "zibo": [
+      "淄博"
+    ],
+    "weifang": [
+      "潍坊"
+    ],
+    "linyi": [
+      "临沂"
+    ],
+    "jining": [
+      "济宁"
+    ],
+    "zhengzhou": [
+      "郑州"
+    ],
+    "luoyang": [
+      "洛阳"
+    ],
+    "kaifeng": [
+      "开封"
+    ],
+    "anyang": [
+      "安阳"
+    ],
+    "xinxiang": [
+      "新乡"
+    ],
+    "wuhan": [
+      "武汉"
+    ],
+    "yichang": [
+      "宜昌"
+    ],
+    "xiangyang": [
+      "襄阳"
+    ],
+    "jingzhou": [
+      "荆州"
+    ],
+    "shiyan": [
+      "十堰"
+    ],
+    "changsha": [
+      "长沙"
+    ],
+    "zhuzhou": [
+      "株洲"
+    ],
+    "xiangtan": [
+      "湘潭"
+    ],
+    "hengyang": [
+      "衡阳"
+    ],
+    "yueyang": [
+      "岳阳"
+    ],
+    "changde": [
+      "常德"
+    ],
+    "zhangjiajie": [
+      "张家界"
+    ],
+    "chenzhou": [
+      "郴州"
+    ],
+    "guilin": [
+      "桂林"
+    ],
+    "liuzhou": [
+      "柳州"
+    ],
+    "nanning": [
+      "南宁"
+    ],
+    "beihai": [
+      "北海"
+    ],
+    "haikou": [
+      "海口"
+    ],
+    "sanya": [
+      "三亚"
+    ],
+    "chengdu": [
+      "成都"
+    ],
+    "mianyang": [
+      "绵阳"
+    ],
+    "leshan": [
+      "乐山"
+    ],
+    "emeishan": [
+      "峨眉山"
+    ],
+    "jiuzhaigou": [
+      "九寨沟"
+    ],
+    "chongqingbei": [
+      "重庆北"
+    ],
+    "guiyang": [
+      "贵阳"
+    ],
+    "zunyi": [
+      "遵义"
+    ],
+    "anshun": [
+      "安顺"
+    ],
+    "kunming": [
+      "昆明"
+    ],
+    "dali": [
+      "大理"
+    ],
+    "lijiang": [
+      "丽江"
+    ],
+    "shangrila": [
+      "香格里拉"
+    ],
+    "xishuangbanna": [
+      "西双版纳"
+    ],
+    "tengchong": [
+      "腾冲"
+    ],
+    "lhasa": [
+      "拉萨"
+    ],
+    "lasa": [
+      "拉萨"
+    ],
+    "xian": [
+      "西安"
+    ],
+    "xian_shaanxi": [
+      "西安"
+    ],
+    "xianyang": [
+      "咸阳"
+    ],
+    "lanzhou": [
+      "兰州"
+    ],
+    "dunhuang": [
+      "敦煌"
+    ],
+    "jiuquan": [
+      "酒泉"
+    ],
+    "zhangye": [
+      "张掖"
+    ],
+    "xining": [
+      "西宁"
+    ],
+    "yinchuan": [
+      "银川"
+    ],
+    "urumqi": [
+      "乌鲁木齐"
+    ],
+    "wulumuqi": [
+      "乌鲁木齐"
+    ],
+    "huhehaote": [
+      "呼和浩特"
+    ],
+    "hohhot": [
+      "呼和浩特"
+    ],
+    "baotou": [
+      "包头"
+    ],
+    "ordos": [
+      "鄂尔多斯"
+    ],
+    "eerduosi": [
+      "鄂尔多斯"
+    ],
+    "harbin": [
+      "哈尔滨"
+    ],
+    "haerbin": [
+      "哈尔滨"
+    ],
+    "changchun": [
+      "长春"
+    ],
+    "shenyang": [
+      "沈阳"
+    ],
+    "dalian": [
+      "大连"
+    ],
+    "anshan": [
+      "鞍山"
+    ],
+    "shijiazhuang": [
+      "石家庄"
+    ],
+    "taiyuan": [
+      "太原"
+    ],
+    "datong": [
+      "大同"
+    ],
+    "wuxi2": [
+      "无锡"
+    ],
+    "yichun": [
+      "宜春",
+      "伊春"
+    ]
+  },
+  "directions": {
+    "north": "北",
+    "south": "南",
+    "east": "东",
+    "west": "西",
+    "dong": "东",
+    "nan": "南",
+    "xi": "西",
+    "bei": "北",
+    "hongqiao": "虹桥",
+    "pudong": "浦东",
+    "capital": "首都",
+    "central": "中央"
+  },
+  "suffixes": [
+    "railwaystation",
+    "railway",
+    "station",
+    "trainstation",
+    "高铁站",
+    "火车站",
+    "站"
+  ],
+  "citySuffixes": [
+    "city",
+    "shi",
+    "市"
+  ]
+}

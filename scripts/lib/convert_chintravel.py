@@ -26,6 +26,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("parquet", help="attractions_zh.parquet 路径")
     ap.add_argument("--out", default=None, help="输出 JSON 路径（默认与 parquet 同目录的 attractions.json）")
+    ap.add_argument("--no-gzip", action="store_true", help="输出未压缩的 .json（默认输出 .json.gz，体积约为 15%%）")
     args = ap.parse_args()
 
     try:
@@ -38,13 +39,16 @@ def main():
     if not os.path.exists(src):
         print(f"找不到文件: {src}", file=sys.stderr)
         return 1
-    out = args.out or os.path.join(os.path.dirname(os.path.abspath(src)), "attractions.json")
+    default_name = "attractions.json" if args.no_gzip else "attractions.json.gz"
+    out = args.out or os.path.join(os.path.dirname(os.path.abspath(src)), default_name)
+    if not args.no_gzip and not out.endswith(".gz"):
+        out += ".gz"
 
     t = pq.read_table(src)
     rows = t.to_pylist()
 
     # 规范化：只保留技能用得上的字段；时间统一成 "HH:MM-HH:MM"；
-    # price 为 0 表示免费（实测某景点 0.0），保留原义交给上层渲染。
+    # price 为 0 表示免费（实测故宫 0.0），保留原义交给上层渲染。
     spots = []
     for r in rows:
         ot, et = (r.get("opentime") or "").strip(), (r.get("endtime") or "").strip()
@@ -54,8 +58,8 @@ def main():
             "city": r.get("city"),
             "name": r.get("name"),
             "type": r.get("type"),
-            "lat": round(r["lat"], 6) if r.get("lat") is not None else None,
-            "lon": round(r["lon"], 6) if r.get("lon") is not None else None,
+            "lat": round(r["lat"], 4) if r.get("lat") is not None else None,
+            "lon": round(r["lon"], 4) if r.get("lon") is not None else None,
             "hours": hours,
             "price": (round(float(price), 1) if price is not None else None),
             "visitMin": r.get("recommendmintime"),
@@ -77,11 +81,18 @@ def main():
         "spots": spots,
     }
 
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+    blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if args.no_gzip:
+        with open(out, "wb") as f:
+            f.write(blob)
+    else:
+        import gzip
+        # 9 级压缩：实测 543 KB JSON → 78 KB（约 15%），node 侧 1ms 解压
+        with open(out, "wb") as f:
+            f.write(gzip.compress(blob, 9))
 
     size = os.path.getsize(out)
-    print(f"已写出 {out}")
+    print(f"已写出 {out}" + ("（gzip，读端见 spots_baseline.js）" if not args.no_gzip else ""))
     print(f"  景点 {len(spots)} 条 · 城市 {len(by_city)} 个 · {size / 1024:.0f} KB")
     for c in sorted(by_city):
         print(f"    {c}: {by_city[c]}")

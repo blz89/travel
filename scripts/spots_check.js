@@ -12,14 +12,16 @@
  *
  * 退出码: 0 = PASS（可以交付）；1 = FAIL（逐条列出问题）
  *
- * 检查项（B1–B7；B1–B4/B6 与 make_html.js 同源）:
+ * 检查项（B1–B8；B1–B4/B6 与 make_html.js 同源）:
  *   B1 数量 5～10
  *   B2 配比：≥2 热门、保底 ≥2 不热门
- *   B3 网址形状闸门（政务页 / 频道首页 / 携程系 / 短链 / 纯 IP 一律拒绝）
+ *   B3 网址形状闸门（政府信息公开·政务目录页 / 政务稿页 / 频道首页 / 携程系 / 短链 / 纯 IP 一律拒绝；
+ *      文旅局 / 管委会 / 省政府的「概况·介绍」文章页是合格的）
  *   B4 字段完整（name / meta / urlLabel / url / source；good/bad ≤2；mine ≥1）
  *   B5 **开放时间或闭馆日**：meta 必须含开放时间形态，或显式写"以景区公示为准"
  *   B6 评价来源标注
  *   B7 封面卡与总览表数字一致（coverCards 里的统计不得与 overview.rows 实际条数矛盾）
+ *   B8 网址评审：每条 url 必须与 spot_link.js 评审缓存一致（A/B 级、≤90 天；F 级要 urlFallback）
  *
  * 注意: 不要读本脚本源码——用 --help 就够了。
  */
@@ -46,6 +48,8 @@ const HELP = [
   '  B5 meta 必须含开放时间（如 "08:30-17:30" 或"全天"），或显式写"以景区公示为准"',
   '  B6 每条都要有评价来源（source）',
   '  B7 封面卡里的统计数字要与总览表实际条数一致',
+  '  B8 网址评审：url 必须与 spot_link.js 评审缓存一致（A/B 级、评审 ≤90 天；F 级要 urlFallback）；',
+  '     距到期不足 15 天只打 WARN（不阻断），提醒你跑 spot_link.js refresh 续期',
   '',
   '注意: 不要读本脚本源码——用 --help 就够了。',
 ].join('\n');
@@ -104,14 +108,23 @@ function main() {
   // ---- B3 网址形状（与生成器同一份规则，见 lib/validate.js）----
   const badUrl = [];
   for (const s of sp) {
-    if (!isStr(s.url)) { badUrl.push(`${s.name || '?'}: url 缺失`); continue; }
+    // F 级降级（评审确认没有合格介绍页）时 url 允许为空，但必须写 urlFallback；由 B8 复核
+    if (!isStr(s.url)) {
+      if (!isStr(s.urlFallback)) badUrl.push(`${s.name || '?'}: url 缺失（F 级降级请写 urlFallback:"以景区公示为准"）`);
+      continue;
+    }
     if (!/^https?:\/\//.test(s.url)) { badUrl.push(`${s.name || '?'}: 不是 http(s) 网址 — ${s.url}`); continue; }
     // 复用生成器同一套规则：直接调 validateData 的单条判定会更绕，这里用其导出的规则表
   }
   // 用 validateData 一次性拿到全部问题，再按前缀归类（保证与生成器判定完全一致）
   const allErrs = validateData(d, 'spots');
   const urlErrs = allErrs.filter(e => /\.url 是「/.test(e) || /\.url 不是 http/.test(e) || /\.url 缺失/.test(e));
-  const b3 = [...badUrl, ...urlErrs];
+  // 去重：同一景点同一个原因只报一次（validateData 与本文件的形状检查会撞车）
+  const b3 = [...new Set([...badUrl, ...urlErrs].map((x) => {
+    const nm = (/([^：:]+)[：:]/.exec(x) || [])[1];
+    const reason = /不是 http/.test(x) ? '不是http' : /缺失/.test(x) ? '缺失' : /是「/.test(x) ? '形状' : x;
+    return nm ? nm.trim() + '|' + reason + '|' + x : 'raw|' + x;
+  }))].map((k) => k.split('|').slice(2).join('|'));
   if (!b3.length) pass.push(`B3 ${sp.length} 条网址全部合规`);
   else fail.push(...b3.map(x => `B3 ${x}`));
 
@@ -160,13 +173,64 @@ function main() {
     const n = num(totalCard.value);
     if (n !== null && n !== sp.length) b7.push(`B7 封面卡「${totalCard.label}」写 "${totalCard.value}"（${n} 个），但 spots 实际 ${sp.length} 个`);
   }
+  if (!cards.length) b7.push('B7 封面卡缺失（coverCards 为空或不是数组）—— 无法核对统计，这本身就是不合格数据');
   if (!b7.length) pass.push('B7 封面卡统计与总览表一致');
   else fail.push(...b7);
 
+  // ---- B8 网址评审（每条 url 必须能在 spot_link.js 的评审缓存里对上号）----
+  // 目的：不让模型"觉得这个网址不错"就挂上去 —— 交付的网址质量必须与已验收样本同级。
+  const B8_MAX_AGE_DAYS = 90;
+const B8_WARN_LEFT_DAYS = 15; // 距离过期不足这么多天就提醒（不阻断）
+  const cacheFile = path.join(__dirname, '..', 'data', 'spots-links.json');
+  let linkDb = {};
+  try { linkDb = JSON.parse(fs.readFileSync(cacheFile, 'utf8').replace(/^\uFEFF/, '')); } catch (_) { linkDb = {}; }
+  const b8 = [];
+  const b8warn = [];
+  const todayMs = Date.now();
+  sp.forEach(s => {
+    const nm = String(s.name || '?');
+    const e = linkDb[nm];
+    const hasUrl = isStr(s.url);
+    if (!e) {
+      if (!hasUrl && isStr(s.urlFallback)) {
+        b8warn.push(`B8 「${nm}」没有评审记录，已按 F 级降级（url 空 + urlFallback）—— 能交付但不算"已评审"；有空补跑 resolve --cache`);
+        return;
+      }
+      b8.push(`B8 「${nm}」没有经过网址评审 —— 先跑 node scripts/spot_link.js resolve --name "${nm}" --url <候选1> --url <候选2> --cache`);
+      return;
+    }
+    // checkedAt 正常是 spot_link.js 写的 "YYYY-MM-DD"；也容忍完整 ISO（手写 / 旧版缓存）：
+    // 统一截到日期再按 UTC 零点算，避免 "…T13:52:31.768Z" 拼上 'T00:00:00Z' 变 NaN 被误判过期。
+    const cAt = String(e.checkedAt || '').slice(0, 10);
+    const parsedAt = Date.parse(cAt + 'T00:00:00Z');
+    const ageDays = Number.isFinite(parsedAt) ? Math.floor((todayMs - parsedAt) / 86400000) : NaN;
+    if (!Number.isFinite(ageDays)) {
+      b8.push(`B8 「${nm}」的评审记录 checkedAt 格式不对（"${e.checkedAt}"）—— 应为 YYYY-MM-DD，重跑 node scripts/spot_link.js resolve … --cache`);
+      return;
+    }
+    if (!(ageDays >= 0 && ageDays <= B8_MAX_AGE_DAYS)) {
+      b8.push(`B8 「${nm}」的网址评审已过期（checkedAt=${cAt}，距今 ${ageDays} 天，上限 ${B8_MAX_AGE_DAYS} 天）—— 重跑 node scripts/spot_link.js refresh`);
+      return;
+    }
+    const leftDays = B8_MAX_AGE_DAYS - ageDays;
+    if (leftDays <= B8_WARN_LEFT_DAYS) b8warn.push(`B8 「${nm}」的网址评审还有 ${leftDays} 天到期（checkedAt=${cAt}）—— 到期后 B8 会直接 FAIL，届时跑 node scripts/spot_link.js refresh`);
+    if (e.grade === 'A' || e.grade === 'B') {
+      if (!hasUrl) b8.push(`B8 「${nm}」评审等级 ${e.grade} 但 url 为空 —— 应填 ${e.intro}`);
+      else if (s.url !== e.intro) b8.push(`B8 「${nm}」url 与评审结果不一致：数据里是 ${s.url}，评审认定的是 ${e.intro}`);
+    } else {
+      // F 级：评审确认"没有合格介绍页"，此时必须如实降级，不许硬挂链接
+      if (hasUrl) b8.push(`B8 「${nm}」评审等级 F（${e.reason}），但数据里仍填了 url —— 清空 url 并写 urlFallback:"以景区公示为准"`);
+      else if (!isStr(s.urlFallback)) b8.push(`B8 「${nm}」评审等级 F，url 留空时必须写 urlFallback:"以景区公示为准"`);
+    }
+  });
+  if (!b8.length) pass.push(`B8 ${sp.length} 条网址都过了评审（等级/时效/一致性${b8warn.length ? '；' + b8warn.length + ' 条临期' : ''}）`);
+  else fail.push(...b8);
+
   // ---- 输出 ----
   const total = pass.length + fail.length;
-  console.log(`spots_check: ${pass.length} PASS / ${fail.length} FAIL（共 ${total} 项）`);
+  console.log(`spots_check: ${pass.length} PASS / ${fail.length} FAIL / ${b8warn.length} WARN（共 ${total} 项）`);
   pass.forEach(p => console.log(`  PASS ${p}`));
+  b8warn.forEach(w => console.log(`  WARN ${w}`));
   fail.forEach(f => console.log(`  FAIL ${f}`));
   if (fail.length) {
     console.log('');

@@ -21,12 +21,13 @@
 
 | 文件 | 说明 |
 |---|---|
-| `attractions.json` | 由 `attractions_zh.parquet` 转换而来，**3,413 条 / 10 城 / 约 563 KB** |
+| `attractions.json.gz` | 由 `attractions_zh.parquet` 转换而来，**3,413 条 / 10 城 / 约 78 KB**（gzip，读端自动解压；未压缩约 543 KB） |
 | `../../scripts/lib/convert_chintravel.py` | 转换器（需要 `pyarrow`，只需在有新版本时重跑一次） |
 
 **重新生成**：
 ```
-在技能根目录运行：python scripts/lib/convert_chintravel.py <attractions_zh.parquet> --out data/china-travel/attractions.json
+在技能根目录运行：python scripts/lib/convert_chintravel.py <attractions_zh.parquet> --out data/china-travel/attractions.json.gz
+（默认就写 `.json.gz`；要未压缩的加 `--no-gzip`。读端 `scripts/spots_baseline.js` 两种都认，优先 `.json`。）
 ```
 
 ## 字段
@@ -39,7 +40,7 @@
 | `price` | 门票（人民币元） | float；**`0` = 免费** |
 | `visitMin` / `visitMax` | 建议游览时长（小时） | float |
 
-**覆盖 10 座城市**（城市名单见 `attractions.json` 的 `city` 字段）。
+**覆盖的 10 城**：北京 / 成都 / 重庆 / 广州 / 杭州 / 南京 / 上海 / 深圳 / 苏州 / 武汉。
 
 ## ⚠ 四条使用边界（务必遵守）
 
@@ -49,13 +50,13 @@
    **基线只用来免去重复检索，不是最终依据。**
 
 2. **建议游览时长口径偏保守，仅供排序参考，不要覆盖查得的结论。**
-   实测：本数据给「某博物院」`0.5–1h`，而常规攻略普遍为 3～4h。
+   实测：本数据给「故宫博物院」`0.5–1h`，而常规攻略普遍为 3～4h。
    → 可用来**初筛/排序**，但**写入方案前应对照攻略修正**。
 
 3. **同批数据集的 `flights` 与 `trains` 表已知有错，本目录只取 `attractions` 表。**
    实测：`flights.FlightID` 是**合成编号** `FL001`（不是真实航班号）；
-   `trains` 记「某站 G2 07:00→11:36 Cost 693.75」，而 12306 实查为
-   「某枢纽 G2 06:43→11:32，二等座 795 / 一等 1272 / 商务 2782」——**站名、时刻、票价都不对**。
+   `trains` 记「上海站 G2 07:00→11:36 Cost 693.75」，而 12306 实查为
+   「上海虹桥 G2 06:43→11:32，二等座 795 / 一等 1272 / 商务 2782」——**站名、时刻、票价都不对**。
    → **绝不可用本数据集供时刻与票价**；铁路一律走 `12306.js`。
 
 4. **技术型来源不进页面**：技能规则是「数据来源只写在聊天回复里，不进网页」——

@@ -10,7 +10,7 @@
  *   厂商返回的原始路况/几何数据**一律不得落盘**（技能红线）。
  *
  * 用法:
- *   node scripts/traffic-history.js <segments.json> [--corridor] [--match "G9101,G9102"] [--top 20] [--json]
+ *   node scripts/traffic-history.js <segments.json> [--corridor] [--match "G72,G80"] [--top 20] [--json]
  *   node scripts/traffic-history.js --check <segments.json>
  *   node scripts/traffic-history.js --selfcheck     # 不联网：自检 window 解析 / 道路归一 / 路段切分
  *   node scripts/traffic-history.js --help
@@ -18,10 +18,10 @@
  * 数据文件（我们自己维护，年更）:
  *   {
  *     "window": "2021-2025",
- *     "corridorHighways": ["干线A","干线B","干线C"],
+ *     "corridorHighways": ["沈海","泉南","厦蓉","广昆","兰海","包茂","汕昆","莆炎","福银","京港澳","许广","二广","深岑","南百","南宁绕城"],
  *     "records": [
  *       { "year": 2023, "holiday": "中秋·国庆", "scope": "全国",
- *         "road": "G9101 甲高速", "segment": "甲省某市段",
+ *         "road": "G80 广昆高速", "segment": "广东佛山、肇庆段",
  *         "kind": "预测",                       // 预测 | 实测
  *         "publisher": "交通运输部路网中心", "url": "https://…", "publishedAt": "2023-09-28" }
  *     ]
@@ -44,21 +44,21 @@ function parseWindow(v) {
 const HELP = `traffic-history.js —— 历史高频拥堵段结论库聚合器
 
 用法:
-  node scripts/traffic-history.js <segments.json> [--corridor] [--match "G9101,G9102"] [--top 20] [--json]
+  node scripts/traffic-history.js <segments.json> [--corridor] [--match "G72,G80"] [--top 20] [--json]
   node scripts/traffic-history.js --check <segments.json>
   node scripts/traffic-history.js --selfcheck     # 不联网
   node scripts/traffic-history.js --help
 
 选项:
   --corridor   只看与目标走廊相关的高速（按数据文件里的 corridorHighways 匹配）
-  --match "G9101,G9102,某互通"   只统计含这些关键词的记录，并给出**缓存判定**
+  --match "G72,G80,那容"   只统计含这些关键词的记录，并给出**缓存判定**
                  HIT  = 覆盖 ≥3 个年份 且 最新年份 ≥ 今年-1 → **跳过检索、直接复用本库**
                  MISS = 否则 → 需要重新收集，收集后**增量写回本库**
   --top N      只列前 N 段（默认 20）
   --json       输出结构化 JSON（便于其它脚本消费）
 
 它做什么:
-  1. 归一化道路编号（G9101 甲高速 / 甲高速G9101 → G9101|甲高速）；
+  1. 归一化道路编号（G80 广昆高速 / 广昆高速G80 → G80|广昆高速）；
   2. 按「道路 + 路段」聚合：统计**被点名的年数**、总条数、其中节后实测条数、逐年出处；
   3. 排序：实测年数 > 总年数 > 条数（节后实测比节前预测权重高）。
 

@@ -100,17 +100,49 @@ function measure(edge, tmpDir, htmlText, opts) {
   }
 }
 
+// 窄屏真量测：走 CDP 的 Emulation.setDeviceMetricsOverride，把视口真的压到 375
+// （--window-size 会被本机最小窗宽撑到 ~489px，量不准）。量不到才退回旧办法 + WARN。
+function measureNarrowCdp(tmpDir, htmlText, opts) {
+  const probeFile = path.join(tmpDir, 'narrow-' + opts.id + '.html');
+  fs.writeFileSync(probeFile, htmlText, 'utf8');
+  let out;
+  try {
+    out = execFileSync(process.execPath, [path.join(__dirname, 'lib', 'narrow.js'), probeFile, '--width', String(opts.windowW), '--height', '900'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 120000, maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (e) {
+    out = (e.stdout || '').toString();
+  }
+  const line = String(out).trim().split(/\r?\n/).pop() || '';
+  let r = null;
+  try { r = JSON.parse(line); } catch { /* 量不到 */ }
+  if (!r || !r.ok) {
+    add(WARN, 'C ' + opts.label, '窄屏真量测没跑起来（' + String((r && r.error) || 'CDP 未返回') + '）——请人工用手机/极窄窗口看一眼');
+    return;
+  }
+  if (Number(r.overCount) === 0 && Number(r.scrollW) <= opts.windowW + 2) {
+    add(PASS, 'C ' + opts.label, `真量测视口 ${r.vw}px（CDP）无元素超出；最宽元素 ${r.worst} 到 ${r.worstRight}px`);
+  } else {
+    add(FAIL, 'C ' + opts.label,
+      `真量测视口 ${r.vw}px 下有 ${r.overCount || '若干'} 个元素超出（页面总宽 ${r.scrollW}px）：${r.overList || ''}——手机端会被切掉，必须修`);
+  }
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const isSpots = argv.includes('--spots');
+  const isQuick = argv.includes('--quick');   // 迭代期：只跑 A/B（静态），跳过浏览器量测
+  const noCache = argv.includes('--no-cache'); // 强制重跑
   const file = argv.find(a => !a.startsWith('-'));
-  for (const a of argv) { if (a === '--spots' || a === '--help' || a === '-h') continue; if (a.startsWith('--') || a.startsWith('-')) { console.error('未知参数: ' + a + '（--help 看用法）'); process.exit(1); } }
+  for (const a of argv) { if (['--spots', '--quick', '--no-cache', '--help', '-h'].includes(a)) continue; if (a.startsWith('--') || a.startsWith('-')) { console.error('未知参数: ' + a + '（--help 看用法）'); process.exit(1); } }
   if (argv.includes('--help') || argv.includes('-h')) {
     console.log([
       'check_html.js —— 成品 HTML 出品校验（必须 PASS 才能交付）',
       '',
       '用法:',
-      '  node scripts/check_html.js <out.html> [--spots]',
+      '  node scripts/check_html.js <out.html> [--spots] [--quick] [--no-cache]',
+      '    --quick  # 迭代期只跑 A/B（静态检查，<0.2s），交付前必须再跑一次完整版',
+      '    --no-cache  # 忽略 10 分钟内的同文件校验结果，强制重跑',
       '    --spots  # 景点页模式：A7 放行"评价来源行"里的平台名（马蜂窝/去哪儿/大众点评/欣欣）',
       '             #            但 12306 / web_search / 脚本名 仍一律不许出现',
       '',
@@ -121,8 +153,9 @@ function main() {
       '  B 自包含: 不得引用任何外部资源（link / script / iframe / 媒体标签 /',
       '    @import / 非 data: 的 CSS url）。允许的只有 <a href> 出站链接与',
       '    **data: 内联图**（自驾路线讲解页要把地图截图内嵌进去，见 make_html.js drive）。',
-      '  C 溢出: 用本机 Edge 无头在三种宽度下真实量测——宽屏 1280 / 窄窗口 375 /',
-      '    A4 打印版式 703px。任何元素横向超出限宽都是 FAIL（打印时会被直接裁掉）。',
+      '  C 溢出: 用本机 Edge 无头真实量测——宽屏 1280 / 窄窗口 375 / A4 打印版式 703px。',
+      '    1280 / 703 / 375 三档超出都是 FAIL；其中 375 走 CDP 真量测（Emulation.setDeviceMetricsOverride），',
+      '    不是窗口缩放——量不到 CDP 时才退回 WARN 并提示人工看。',
       '',
       '退出码: 0 = PASS；1 = 有 FAIL。取不到浏览器时 C 项降级为 SKIP（不阻断交付，但会提示）。',
       '报错处理: 改数据（或生成器）后**重新生成 HTML 再跑一遍**，直到 PASS。',
@@ -140,6 +173,22 @@ function main() {
     process.exit(1);
   }
   const html = fs.readFileSync(file, 'utf8');
+
+  // ---- 结果缓存：同文件 + 同大小 + 同 mtime + 同模式，10 分钟内直接复用 ----
+  const cachePath = path.join(os.tmpdir(), 'travel-cache', 'check_html_cache.json');
+  const st = fs.statSync(file);
+  const cacheKey = [path.resolve(file), st.size, Math.round(st.mtimeMs), isSpots ? 'spots' : 'plain', isQuick ? 'quick' : 'full'].join('|');
+  if (!noCache) {
+    try {
+      const db = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+      const h = db[cacheKey];
+      if (h && Date.now() - h.ts < 10 * 60 * 1000) {
+        console.log(`[缓存] 同文件 ${Math.round((Date.now() - h.ts) / 1000)} 秒前校验过、内容未变（--no-cache 强制重跑）`);
+        process.stdout.write(h.text);
+        process.exit(h.exit);
+      }
+    } catch (_) { /* 没缓存就正常跑 */ }
+  }
 
   // ---------- A. 结构 ----------
   if (!/^<!DOCTYPE html>/i.test(html.trimStart())) add(FAIL, 'A1 DOCTYPE', '缺少 <!DOCTYPE html>');
@@ -176,6 +225,9 @@ function main() {
   //    的概率很高（608 KB 的图实测必中），不剥就会把一张正常的路线讲解页判成"数据缺失"。
   const NO_DATA_URI = html.replace(/data:[^"')\s]+/g, 'data:URI');
   const junk = ['undefined', 'NaN', '[object Object]'].filter(b => NO_DATA_URI.includes(b));
+  // 生成器/emit 留下的「待补、「（补写）」这类占位：空串检查抓不到，必须按词表拦。
+  const PLACEHOLDER = [/（待填/g, /待填…/g, /（补写）/g, /（待补）/g, /TODO/g, /FIXME/g, /\{\{[^}]+\}\}/g, /路线\s*交通方案/g];
+  for (const re of PLACEHOLDER) { const n = (NO_DATA_URI.match(re) || []).length; if (n) junk.push(`占位词「${String(re.source).replace(/[\\（）]/g, '')}」×${n}`); }
   if (empties.length || junk.length) {
     const detail = [empties.join(' / '), junk.length ? '未渲染占位符：' + junk.join(' / ') : '']
       .filter(Boolean).join('；');
@@ -253,6 +305,9 @@ function main() {
   if (external.length) add(FAIL, 'B1 自包含', '引用了外部资源：' + external.join(' / ') + '（交付物必须单文件）');
   else add(PASS, 'B1 自包含', '零外链、零依赖（允许的只有 <a href> 出站链接）');
   // ---------- C. 溢出（真实浏览器，三种视口） ----------
+  if (isQuick) {
+    add(PASS, 'C 溢出检查', '--quick 跳过（只验 A/B；交付前请去掉 --quick 再跑一次完整版）');
+  } else {
   const edge = EDGE_CANDIDATES.find(p => fs.existsSync(p));
   if (!edge) {
     add(SKIP, 'C 溢出检查', '未找到 Edge/Chrome，跳过浏览器量测（交付不受影响，但请人工过一眼）');
@@ -264,9 +319,8 @@ function main() {
       id: 'wide', label: 'C1 宽屏（窗口 1280）', windowW: 1280, windowH: 900,
       limit: 'document.documentElement.clientWidth', critical: false,
     });
-    measure(edge, tmpDir, html, {
-      id: 'narrow', label: 'C2 窄窗口（窗口 375）', windowW: 375, windowH: 900,
-      limit: 'document.documentElement.clientWidth', critical: false,
+    measureNarrowCdp(tmpDir, html, {
+      id: 'narrow', label: 'C2 窄屏（375px 真量测）', windowW: 375, windowH: 900, critical: true,
     });
 
     // C3：把打印样式搬到屏幕、禁用窄屏断点、并把文档钉死成 A4 正文宽，量测打印版式
@@ -282,22 +336,31 @@ function main() {
 
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
   }
+  }
 
   // ---------- 报告 ----------
   const order = { FAIL: 0, WARN: 1, SKIP: 2, PASS: 3 };
   results.sort((a, b) => order[a.level] - order[b.level]);
-  console.log('HTML 出品校验：' + path.basename(file));
-  console.log('─'.repeat(74));
-  for (const r of results) console.log(`[${r.level}] ${r.name}${r.detail ? ' — ' + r.detail : ''}`);
-  console.log('─'.repeat(74));
+  const outLines = ['HTML 出品校验：' + path.basename(file), '─'.repeat(74)];
+  for (const r of results) outLines.push(`[${r.level}] ${r.name}${r.detail ? ' — ' + r.detail : ''}`);
+  outLines.push('─'.repeat(74));
   const fails = results.filter(r => r.level === FAIL).length;
   const warns = results.filter(r => r.level === WARN).length;
-  if (fails) {
-    console.log(`结论：FAIL（${fails} 项不通过）`);
-    process.exit(1);
+  const exit = fails ? 1 : 0;
+  outLines.push(fails ? `结论：FAIL（${fails} 项不通过）` : `结论：PASS${warns ? `（${warns} 项提示，建议看一眼）` : ''}`);
+  const text = outLines.join('\n') + '\n';
+  process.stdout.write(text);
+  // 落缓存（同文件 10 分钟内、内容未变时直接复用，避免每次交付白烧 ~34s）
+  if (!noCache) {
+    try {
+      fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+      let db = {};
+      try { db = JSON.parse(fs.readFileSync(cachePath, 'utf8')); } catch (_) {}
+      db[cacheKey] = { ts: Date.now(), exit, text };
+      fs.writeFileSync(cachePath, JSON.stringify(db), 'utf8');
+    } catch (_) { /* 缓存失败不影响校验 */ }
   }
-  console.log(`结论：PASS${warns ? `（${warns} 项提示，建议看一眼）` : ''}`);
-  process.exit(0);
+  process.exit(exit);
 }
 
 if (require.main === module) main();

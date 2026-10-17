@@ -45,8 +45,14 @@ const URL_SHAPE_RULES = [
   ['短链 / 跳转站', u => /^https?:\/\/(bit\.ly|t\.cn|dwz\.cn|url\.cn|suo\.im|sourl\.cn)\//i.test(u)],
   ['纯 IP 地址', u => /^https?:\/\/\d{1,3}(\.\d{1,3}){3}/.test(u)],
   ['反爬 / 验证特征', u => /verify|security|robot|captcha|antibot/i.test(u)],
+  ['反爬常客（百科/知道/经验，正文拿不到）', u => /(baike|zhidao|jingyan)\.baidu\.com/i.test(u)],
   ['携程系（trip.com / ctrip.com）', u => /(^|\.)(trip\.com|ctrip\.com)/i.test(u)],
-  ['政府 CMS 日期稿件页（如 /t20220421_5692516.shtml）', u => /\/t\d{8}_\d+\.s?html?$/i.test(u)],
+  ['政府 CMS 日期稿件页（如 …gov.cn/t20220421_5692516.shtml）', u => {
+    // 只针对政府站：央媒/景区站也用 /t2025xxxx_xxxx.html 这种路径（人民画报即如此），不该冤枉
+    let host = '';
+    try { host = new URL(u).hostname; } catch (_) { return false; }
+    return /\.gov\.cn$/.test(host) && /\/t\d{8}_\d+\.s?html?$/i.test(u);
+  }],
   ['政府信息公开 / 政务目录页', u => /\/(xxgk|bmxxgkmlx?|xxgkml|zwgk|zwxx|gkml|zfxxgk)\w*\//i.test(u)],
   ['频道 / 栏目首页', u => /\/(cindex|index|list|channel|column)\.?\w*$/i.test(u)],
 ];
@@ -54,6 +60,32 @@ const urlShapeFail = u => {
   for (const [name, f] of URL_SHAPE_RULES) if (f(u)) return name;
   return null;
 };
+
+// 「频道/栏目首页」「政府 CMS 日期稿件页」原本一刀切，但许多景区官网只有这类页面承载
+// 景区介绍（实测：张家界官网 /index.php/Article/list/11.html，要点 28、汉字 5815、图 36）。
+// 单一真源 = spot_link.js 的评审结论：**评审判 A/B 就放行**，判 weak/F 才拦。
+const REVIEW_EXEMPT = new Set(['频道 / 栏目首页', '政府 CMS 日期稿件页']);
+let __spotsCache = null;
+let __spotsCacheMtime = 0;
+function loadSpotsCache() {
+  // 按 mtime 失效：同一进程里先跑 spot_link 再跑校验也能读到最新评审结果
+  try {
+    const p = path.join(__dirname, '..', '..', 'data', 'spots-links.json');
+    const m = fs.statSync(p).mtimeMs;
+    if (!__spotsCache || m !== __spotsCacheMtime) {
+      __spotsCache = JSON.parse(fs.readFileSync(p, 'utf8'));
+      __spotsCacheMtime = m;
+    }
+    return __spotsCache;
+  } catch (_) { __spotsCache = {}; return __spotsCache; }
+}
+function reviewGrade(name, url) {
+  const __spotsCache = loadSpotsCache();
+  const e = __spotsCache[String(name || '').trim()];
+  if (!e) return null;
+  if (!['A', 'B'].includes(String(e.grade))) return null;
+  return String(e.intro || '') === String(url || '') ? String(e.grade) : null;
+}
 
 // 开放时间形态：08:30-17:30 / 08:30–17:30 / 08:30~17:30 / 08:30至17:30，或「全天」
 const OPEN_HOURS_RE = /\d{1,2}:\d{2}\s*[-–—~至]\s*\d{1,2}:\d{2}|全天/;
@@ -197,15 +229,39 @@ function validateData(d, mode) {
           ` —— 开放时间与闭馆日是必填信息，查不到就如实写"以景区公示为准"。meta 现值：${JSON.stringify(s.meta)}`);
       }
       if (!isStr(s.urlLabel)) errs.push(`${tag}.urlLabel 缺失`);
-      if (!isStr(s.url)) errs.push(`${tag}.url 缺失`);
-      else if (!/^https?:\/\//.test(s.url)) errs.push(`${tag}.url 不是 http(s) 网址：${s.url}`);
+      // url 可以为空，但**仅在**评审判定 F 级、且显式写了降级文案时（"以景区公示为准"）
+      const hasFallback = isStr(s.urlFallback);
+      if (!isStr(s.url)) {
+        if (!hasFallback) errs.push(`${tag}.url 缺失 —— 若 spot_link.js 评审为 F 级，请写 urlFallback:"以景区公示为准"`);
+      } else if (!/^https?:\/\//.test(s.url)) errs.push(`${tag}.url 不是 http(s) 网址：${s.url}`);
       else {
-        const bad = urlShapeFail(s.url);
+        let bad = urlShapeFail(s.url);
+        if (bad && REVIEW_EXEMPT.has(bad) && reviewGrade(s.name, s.url)) bad = null; // 评审 A/B 豁免栏目页/日期稿件页
         if (bad) {
           errs.push(`${tag}.url 是「${bad}」，不能作为景点网址：${s.url}` +
-            ` —— 景点网址只能是**该景点的官网**，或旅游平台（马蜂窝/去哪儿/欣欣）上**该景点的详情页**；` +
-            `官网首页请直接写站点根地址（如 https://www.example.com/）；没有官网就如实写"未找到官网"再用详情页，` +
-            `不得拿政务页 / 信息公开页 / 新闻稿 / 栏目首页充数`);
+            ` —— 景点只给**一条**「当地文旅局 / 景区管委会 / 景区官网的概况·介绍页」，` +
+            `且必须过 \`node scripts/spot_link.js resolve --name "<景区名>" --url <候选…> --cache\` 评审（spots_check B8 复核）；` +
+            `拿不到合格页就 url 留空 + urlFallback:"以景区公示为准"，不得拿反爬页 / 信息公开页 / 栏目首页 / 携程系充数`);
+        }
+      }
+      // 三轨链接（可选）：official = 须知/公告页，photo = 图集页。
+      // 只要给了就必须是稳定直达页，规则与 url 同一套 —— 版本页/栏目首页/政府信息公开页一律不认。
+      for (const k of ['official', 'photo']) {
+        if (s[k] === undefined || s[k] === null || s[k] === '') continue;
+        const v = String(s[k]).trim();
+        if (!/^https?:\/\//.test(v)) { errs.push(`${tag}.${k} 不是 http(s) 网址：${v}`); continue; }
+        let bad = urlShapeFail(v);
+        if (bad && REVIEW_EXEMPT.has(bad) && reviewGrade(s.name, v)) bad = null;
+        if (bad) errs.push(`${tag}.${k} 是「${bad}」，不能作为景点链接：${v} —— 换景区官网/文旅局介绍页/公告页；拿不到就留空`);
+      }
+      // 门票三态（可选）：paid / free / free_with_fee_parts（后者必须列收费子景点）。
+      // 只回答“要不要买票”，不写票价 —— 客户口径是只算车费。
+      if (s.ticket !== undefined && s.ticket !== null) {
+        const st = typeof s.ticket === 'string' ? s.ticket : s.ticket.status;
+        if (!['paid', 'free', 'free_with_fee_parts'].includes(st)) {
+          errs.push(`${tag}.ticket 状态必须是 paid / free / free_with_fee_parts 之一（当前 ${JSON.stringify(st)}）`);
+        } else if (st === 'free_with_fee_parts' && nonEmpty(s.ticket.parts).length === 0) {
+          errs.push(`${tag}.ticket 为 free_with_fee_parts 时必须列 parts（园区免费、但园中园/索道等另收费的子景点名）`);
         }
       }
       // 好评 / 差评：最多 2 条；公开评论确实很少时允许 1 条甚至 0 条（如实呈现，不得编造）
@@ -213,6 +269,11 @@ function validateData(d, mode) {
         if (nonEmpty(s[k]).length > 2) errs.push(`${tag}.${k} 最多 2 条（当前 ${nonEmpty(s[k]).length} 条）`);
       }
       if (nonEmpty(s.mine).length < 1) errs.push(`${tag}.mine 至少 1 条`);
+      {
+        // 「我的点评」是这一页唯一有人味的部分：太短就成了复述 meta。要求合计 >= 24 字。
+        const mineTxt = nonEmpty(s.mine).map((x) => String(x).trim()).join("");
+        if (mineTxt.length < 24) errs.push(`${tag}.mine 太短（合计 ${mineTxt.length} 字）——「我的点评」至少 24 字：一条判断 + 一个具体画面或取舍理由；可以幽默、口语，但不得编事实`);
+      }
       if (!isStr(s.source)) errs.push(`${tag}.source 缺失（评价来源标注是硬性要求，见「流程二」步骤 4）`);
     });
     // 数量与配比：技能硬性要求（5～10 个 / ≥2 热门 / 保底 2 不热门）。
@@ -263,22 +324,22 @@ function validateData(d, mode) {
       if (!isStr(m.image)) errs.push('地图章节缺 image（填截图文件路径，如 "_work/路线图.jpg"）');
       else if (!fs.existsSync(path.resolve(m.image))) errs.push(`地图截图文件不存在：${m.image}`);
     });
-    // 车辆类型分流：「如果不是电车可没有服务区推荐哦」。
+    // 车辆类型分流：客户 2026-10-17「如果不是电车可没有服务区推荐哦」。
     // `vehicle` 缺省按电车（旧数据兼容）；写「油车」→ 充电规划整节不做、讲解页也不许出现充电内容。
     const isEV = !/油/.test(String(d.vehicle || '电车'));
     const CHG = /充电|充电桩|快充|超充|换电/;
     if (isEV) {
       if (!arr(d.waypoints) || !d.waypoints.length) errs.push('waypoints 缺失或为空（电车充电清单：第一行是表头）');
       else if (d.waypoints.length < 2) errs.push('waypoints 至少要有「表头 + 1 行充电点」');
-      // 第 2 页＝纯「电车充电清单」：「拥堵路段和充电服务区分开，第二页混在一起太乱」。
+      // 第 2 页＝纯「电车充电清单」：客户 2026-10-17「拥堵路段和充电服务区分开，第二页混在一起太乱」。
       // 拥堵的下/上高速口只能进第③段 table（下高速口/上高速口 列），不许混进充电表。
       const WPMIX = /收费站|高速口|下高速|上高速|互通|匝道/;
       const wpBad = (arr(d.waypoints) || []).slice(1).map((r, i) => ({ r, i })).filter(o => (arr(o.r) || []).some(c => WPMIX.test(String(c))));
-      if (wpBad.length) errs.push(`waypoints（第 2 页充电清单）第 ${wpBad[0].i + 2} 行混进了拥堵/收费站信息：第 2 页只放电车充电服务区（里程/服务区/本段里程/桩/备注），拥堵的「下口/上口」请放第③段 table 的下高速口、上高速口列（）`);
+      if (wpBad.length) errs.push(`waypoints（第 2 页充电清单）第 ${wpBad[0].i + 2} 行混进了拥堵/收费站信息：第 2 页只放电车充电服务区（里程/服务区/本段里程/桩/备注），拥堵的「下口/上口」请放第③段 table 的下高速口、上高速口列（客户 2026-10-17）`);
     } else {
-      if (arr(d.waypoints) && d.waypoints.length > 1) errs.push('车辆类型＝油车，不该有充电清单（waypoints 只留表头或整段省略）——「如果不是电车可没有服务区推荐哦」');
+      if (arr(d.waypoints) && d.waypoints.length > 1) errs.push('车辆类型＝油车，不该有充电清单（waypoints 只留表头或整段省略）——客户 2026-10-17：「如果不是电车可没有服务区推荐哦」');
       const allTxt = JSON.stringify([d.coverTitle, d.coverSubtitle, d.coverNote, d.coverCards, d.overview, d.footnotes, d.waypoints, d.sections]);
-      if (CHG.test(allTxt)) errs.push('车辆类型＝油车，讲解页里出现了「充电／充电桩／快充／超充／换电」字样：油车不做充电点、不推荐服务区（）');
+      if (CHG.test(allTxt)) errs.push('车辆类型＝油车，讲解页里出现了「充电／充电桩／快充／超充／换电」字样：油车不做充电点、不推荐服务区（客户 2026-10-17）');
     }
     (arr(d.sections) || []).forEach((s, i) => {
       if (!isStr(s.id) || !isStr(s.title) || !isStr(s.type)) { errs.push(`sections[${i}] 需要 id / title / type`); return; }

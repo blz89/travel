@@ -143,9 +143,31 @@ function hero(d) {
     (d.coverNote ? `<p class="banner">${esc(d.coverNote)}</p>` : '') + `</section>`;
 }
 
+// ---------- 一页速览（自动由已有字段拼出，不改任何输入数据） ----------
+function plainText(x) { return String(x == null ? '' : x).replace(/<[^>]*>/g, '').trim(); }
+
+function quick(d) {
+  const line1 = [d.coverTitle || d.title || '', d.coverSubtitle || d.subtitle || ''].filter(Boolean).join(' · ');
+  const chips = (d.coverCards || [])
+    .map(c => { const t = card3(c) || []; return [plainText(t[0]), plainText(t[1])].filter(Boolean).join(' '); })
+    .filter(Boolean);
+  const rows = ((d.overview && d.overview.rows) || []).slice(0, 4)
+    .map(r => (r || []).map(plainText).filter(Boolean).join(' · '))
+    .filter(Boolean);
+  if (!line1 && !chips.length && !rows.length) return '';
+  const pre = [line1, ...chips, ...rows].filter(Boolean).join('\n');
+  return `<div class="quickbox"><p class="qtitle">${esc(line1)}</p>` +
+    (chips.length ? `<div class="qgrid">${chips.map(t => `<div class="qk">${esc(t)}</div>`).join('')}</div>` : '') +
+    (rows.length ? `<div class="qrows">${rows.map(t => `<p>· ${esc(t)}</p>`).join('')}</div>` : '') +
+    `<pre class="copytxt">${esc(pre)}</pre>` +
+    `<p class="qhint">长按上面深色区域即可复制；页面是单文件，断网、手机都能打开</p>` +
+    `</div>`;
+}
+
 // ---------- 流程一：城际交通方案 ----------
 function buildPlan(d) {
   blocks.push(hero(d));
+  { const q = quick(d); if (q) sec('quick', '一页速览', '手机上一屏看完；要发给同行的人，直接复制下面这段（微信可粘贴）', q); }
   if (d.overview) {
     sec('overview', d.overview.title || '决策速览', d.overview.subtitle,
       ovTable(d.overview, { boldCols: [3] }) +
@@ -180,6 +202,7 @@ const dotList = arr => (arr || [])
 // ---------- 流程二：目的地景点分析 ----------
 function buildSpots(d) {
   blocks.push(hero(d));
+  { const q = quick(d); if (q) sec('quick', '一页速览', '手机上一屏看完；要发给同行的人，直接复制下面这段（微信可粘贴）', q); }
   if (d.overview) {
     sec('overview', d.overview.title || '景点总览', d.overview.subtitle,
       ovTable(d.overview, { hotLastCol: true }) +
@@ -193,28 +216,52 @@ function buildSpots(d) {
     if (b) cols.push(`<div class="col"><h4 class="bh">景区差评</h4>${b}</div>`);
     if (m) cols.push(`<div class="col mine"><h4 class="mh">我的点评</h4>${m}</div>`);
     // 按钮自动带外链箭头 + 一行「点击可在新窗口打开」提示（数据里不用写，避免各景点写法不一）
+    // 三轨：url（介绍页，必填）/ official（开放与预约）/ photo（图集）—— 后两者有才渲染
     const siteLabel = String(sp.urlLabel == null ? '' : sp.urlLabel).replace(/\s*↗\s*$/, '');
+    const links = [];
+    const s = v => (v == null ? '' : String(v).trim());
+    if (s(sp.url)) links.push({ label: siteLabel || '景区介绍', url: s(sp.url) });
+    if (s(sp.official)) links.push({ label: '开放与预约', url: s(sp.official) });
+    if (s(sp.photo)) links.push({ label: '景区图集', url: s(sp.photo) });
+    // F 级降级：找不到合格介绍页时不给按钮，只给一句如实说明（不许挂坏链接）
+    const fallbackNote = !s(sp.url) && s(sp.urlFallback) ? s(sp.urlFallback) : '';
+    // 门票三态：只回答"要不要买票"，不写票价（客户口径只算车费）
+    const tk = sp.ticket;
+    let tickNote = '';
+    if (tk) {
+      const st = typeof tk === 'string' ? tk : tk.status;
+      const parts = Array.isArray(tk && tk.parts) ? tk.parts.filter(x => s(x)) : [];
+      const map = {
+        paid: '门票：需购票（官方渠道预约，建议出发前查放票时间）',
+        free: '门票：免费（园区不收大门票）',
+        free_with_fee_parts: '门票：园区免费，园中园/索道等另收费' + (parts.length ? '：' + parts.join(' / ') : ''),
+      };
+      tickNote = map[st] || (s(tk && tk.note) || '');
+      if (st === 'free_with_fee_parts') tickNote += '（按需购买，不影响能否进园）';
+    }
     return `<article class="spotcard">
     <header class="schead">
       <div><h3>${esc(sp.name)}</h3><p class="meta">${esc(sp.meta)}</p></div>
       <div class="sitebox">
-        <a class="btn" href="${esc(sp.url)}" target="_blank" rel="noopener">${esc(siteLabel)} ↗</a>
-        <p class="hint">点击按钮，在新窗口打开该景点页面</p>
+        ${links.map(l => `<a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)} ↗</a>`).join('\n        ')}
+        <p class="hint">${fallbackNote ? esc(fallbackNote) : '点击按钮，在新窗口打开该景点页面'}</p>
       </div>
     </header>
+    ${tickNote ? `<p class="src">${esc(tickNote)}</p>` : ''}
     <div class="grid3 n${cols.length}">
       ${cols.join('')}
     </div>
     ${sp.source ? `<p class="src">${esc(sp.source)}</p>` : ''}
   </article>`;
   }).join('');
-  sec('spots', '景点详情', '每个景点：官方网址直达 · 好评差评 · 我的点评（含来源标注）', cards);
+  sec('spots', '景点详情', '每个景点：景区介绍页直达 · 好评差评 · 我的点评（含来源标注）', cards);
   return;
 }
 
 // ---------- 流程二：行程方案 ----------
 function buildItin(d) {
   blocks.push(hero(d));
+  { const q = quick(d); if (q) sec('quick', '一页速览', '手机上一屏看完；要发给同行的人，直接复制下面这段（微信可粘贴）', q); }
   // 口径可切换：公共交通（默认）「公交+打车 / 打车约 / 全程打车备选」；
   // 自驾把 legLabel 设为「行车路线」、taxiLabel 设为「车程」、carLabel 设为「备选路线」。
   const legLabel = d.legLabel === undefined ? '公交+打车' : d.legLabel;
@@ -289,7 +336,7 @@ function buildItin(d) {
 
 // ---------- 自驾：路线讲解页（地图截图 + 讲解；图由地图厂商渲染后截图交付） ----------
 // 为什么要有这一页：**图（截图）本身看不出一条路线为什么这么走**——客户看到一张地图会问
-// "这线为什么绕？为什么不去某市？哪里会堵？" 所以截图之外必须配一份**单文件讲解页**：
+// "这线为什么绕？为什么不去南宁？哪里会堵？" 所以截图之外必须配一份**单文件讲解页**：
 // 把截图内嵌进去（data URI，仍然零外链），逐项讲清 ① 图怎么读 ② 途经点是什么 ③ 为什么走这条走廊
 // ④ 当天哪里会堵、堵了怎么办 ⑤ 电车在哪充 ⑥ 口径与来源。
 // 数据里只写内容：`map.image` 给**截图文件路径**（本脚本自己读文件、转 base64 内嵌）。
@@ -339,7 +386,8 @@ function driveBlock(s, d) {
 
 function buildDrive(d) {
   blocks.push(hero(d));
-  blocks.push(ovTable(d.overview, { boldCols: d.overview.boldCols }));
+  { const q = quick(d); if (q) sec('quick', '一页速览', '手机上一屏看完；要发给同行的人，直接复制下面这段（微信可粘贴）', q); }
+  if (d.overview) sec('overview', d.overview.title || '总览', d.overview.subtitle, ovTable(d.overview, { boldCols: d.overview.boldCols }) + notes(d.overview.footnotes || d.overview.note || d.overview.noteBox));
   for (const s of (d.sections || [])) sec(s.id, s.title, s.sub, driveBlock(s, d));
 }
 
@@ -398,6 +446,15 @@ a{color:#0A5FBF}
         padding:13px 18px;color:var(--warn);font-weight:700;font-size:16px;text-align:center}
 
 /* 章节 */
+ .quicksum .quickbox{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(16,32,51,.04)}
+ .qtitle{margin:0 0 10px;font-size:20px;font-weight:800;color:var(--deep)}
+ .qgrid{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 10px}
+ .qk{background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:6px 12px;font-size:14.5px}
+ .qrows p{margin:2px 0;font-size:15.5px}
+ .copytxt{white-space:pre-wrap;background:#0B2233;color:#E8F1F7;border-radius:10px;padding:12px 14px;font-size:14px;line-height:1.6;margin:12px 0 6px;overflow-wrap:anywhere}
+ .qhint{margin:0;font-size:13.5px;color:var(--gray)}
+ @media(max-width:812px){.qtitle{font-size:18px}.copytxt{font-size:13px}}
+ @media(max-width:812px){.hero .stats{display:none}} /* 手机上一屏收束：封面卡与「一页速览」重复，窄屏只留后者 */
 .sec{padding:38px 0 4px;scroll-margin-top:26px}
 .sec h2{font-size:28px;color:var(--deep)}
 .sec>.sub{margin:6px 0 20px;font-size:16px;color:var(--gray)}
@@ -603,21 +660,45 @@ function shell(title, subtitle) {
 // ---------- 重生成次数上限（防"生成→校验失败→再生成"无限循环）----------
 // 为什么需要：HTML → 校验 → 重生成**一次要回放整个上下文**（含上一版完整 HTML，5～20k token）。
 // 而没有上限时，执行者可能一轮轮改数据重试，把整场会话的钱烧掉。
-// 为什么要落盘计数：`make_html.js` **每次都是新进程**，自己不知道这是第几次；而**模型记不住**自己生成过几次
+// 为什么要落盘计数：`make_html.js` **每次都是新进程**，自己不知道这是第几次；而**模型记不住**生成过几次
 // ——"记住次数"正是要消除的那种 AI 思考。
-const RUNS_FILE = path.join(__dirname, '.make_html_runs.json');
-const MAX_RUNS = 2;   // 同一 out.html 最多生成 2 次（第 3 次调用拒绝）
-function loadRuns() { try { return JSON.parse(fs.readFileSync(RUNS_FILE, 'utf8')) || {}; } catch { return {}; } }
+// 计数落在 %TEMP%\travel-cache 下：不污染技能目录、不被复制进安装副本；
+// 并且 30 分钟没动静就自动过期 —— 跨会话复用同一个 out.html 不会再“第一次就撞上限”。
+const RUNS_FILE = path.join(process.env.TEMP || process.env.TMP || __dirname, 'travel-cache', 'make_html_runs.json');
+const RUN_TTL_MS = 30 * 60 * 1000;
+const MAX_RUNS = 2;        // 软上限：30 分钟内第 3 次起只 WARN，不拒绝（改主意是常态）
+const HARD_MAX_RUNS = 5;   // 硬上限：第 6 次起阻断——防“一直在 FAIL 却反复重试”烧 token；出口是 --reset-runs
+function loadRuns() {
+  try {
+    const m = JSON.parse(fs.readFileSync(RUNS_FILE, 'utf8')) || {};
+    const now = Date.now();
+    for (const k of Object.keys(m)) {
+      const v = m[k];
+      const at = typeof v === 'object' && v ? Number(v.at) || 0 : 0;
+      if (!at || now - at > RUN_TTL_MS) delete m[k];   // 过期 = 计数器清零
+    }
+    return m;
+  } catch { return {}; }
+}
+function runCount(m, key) {
+  const v = m[key];
+  return typeof v === 'object' && v ? Number(v.n) || 0 : 0;
+}
+function saveRuns(m) {
+  try {
+    fs.mkdirSync(path.dirname(RUNS_FILE), { recursive: true });
+    const keys = Object.keys(m);
+    if (keys.length > 60) for (const k of keys.slice(0, keys.length - 60)) delete m[k];
+    fs.writeFileSync(RUNS_FILE, JSON.stringify(m, null, 1), 'utf8');
+  } catch { /* 计数失败不阻断生成 */ }
+}
 function bumpRuns(key) {
   const m = loadRuns();
-  m[key] = (m[key] || 0) + 1;
-  // 只保留最近 60 条，避免无限增长
-  const keys = Object.keys(m);
-  if (keys.length > 60) for (const k of keys.slice(0, keys.length - 60)) delete m[k];
-  try { fs.writeFileSync(RUNS_FILE, JSON.stringify(m, null, 1), 'utf8'); } catch { /* 计数失败不阻断 */ }
-  return m[key];
+  m[key] = { n: runCount(m, key) + 1, at: Date.now() };
+  saveRuns(m);
+  return m[key].n;
 }
-function resetRuns(key) { try { const m = loadRuns(); delete m[key]; fs.writeFileSync(RUNS_FILE, JSON.stringify(m, null, 1), 'utf8'); } catch { } }
+function resetRuns(key) { try { const m = loadRuns(); delete m[key]; saveRuns(m); } catch { /* 复位失败不阻断 */ } }
 
 // ---------- 入口 ----------
 // 用 `require.main === module` 守卫：这样本文件可以被 require（拿 validateData 等）而**不会顺带执行生成流程**。
@@ -660,7 +741,7 @@ function main() {
       '  ★ 推荐一条命令到底（省往返，也免得忘记校验）：',
       '  node scripts/make_html.js plan <data.json> <out.html> --check',
       '    --check  生成后立刻跑 check_html.js（景点页自动带 --spots），FAIL 则以退出码 1 结束',
-      '    --reset-runs <out.html>  复位该产物的生成计数（同一路径最多生成 2 次，第 3 次会被拒；要重出就先复位，只写这一条命令、不用数据文件）',
+      '    --reset-runs <out.html>  复位该产物的生成计数（同一路径 30 分钟内：前 2 次正常，第 3–5 次只 WARN，第 6 次起拒绝并提示本命令；计数在 %TEMP%\\travel-cache，不写技能目录）',
       '  加了 --check 后**不要再单独跑** check_html.js。',
       '  交付形态只有 HTML（不产出 PDF）；客户要纸面请自行用浏览器打印。',
       '',
@@ -674,7 +755,7 @@ function main() {
       '  · 各方案的 steps / costRows',
       '  · 行程页 legs[]：from / to / km 必需（km 写数字 15.3 或 "15.3 km" 都行）',
       '  · overview.colWidths 必须是**正数数组**（数字权重，个数 = 列数）——写成百分比字符串会静默产出 NaN%',
-      '  · 景点页的 url 走**形状闸门**（政务页 / 频道首页 / 携程系 / 短链 / 纯 IP 一律拒绝）',
+      '  · 景点页的 url 走**形状闸门**（政府信息公开·政务目录页 / 政务稿页 / 频道首页 / 携程系 / 短链 / 纯 IP 拒绝；文旅局·管委会·省政府的「概况/介绍」文章页合格）',
       '  · 块级字段（plans / extra / fastest）没给就不出那一块',
       '  · 自驾页（drive）：map.image = **地图截图文件路径**（本脚本读文件转 base64 内嵌，交付物仍是单文件）；',
       '      waypoints = 途经点表（第一行是表头）；sections[] = 通用章节（type: map/table/grid3/notes/sources）；',
@@ -718,21 +799,21 @@ function main() {
   // ⚠ 这里**不要**再调一次 buildPlan/buildSpots：`secs` / `blocks` 是模块级数组、不在 build* 里清空，
   //    调两次会把 hero 与全部章节**各渲染两遍**（页面正文变成两倍，导航重复），
   //    而 `check_html.js` 的既有检查**抓不到**。渲染**只在下面重生成上限判定之后做一次**。
-  // ── 重生成上限：同一 out.html 最多生成 MAX_RUNS 次 ──
-  // 放在数据校验**之后**：数据本身不合法（A2/A4 等）是"还没资格生成"，不该消耗重生成配额。
+  // ── 重生成次数提示：同一 out.html 连续 30 分钟内超过 MAX_RUNS 次，只提示、不拒绝 ──
+  // 硬拒曾把“客户改一次主意”变成一道墙（第 3 次生成直接 exit 1）；真正的防线是 --check 的 FAIL 明细与交付纪律。
   const runsKey = path.resolve(outArg);
-  const runs = (loadRuns()[runsKey] || 0) + 1;
-  if (runs > MAX_RUNS) {
-    console.error(`已达重生成上限：${outArg} 已生成 ${MAX_RUNS} 次，仍被校验/校验器拒绝。`);
-    console.error('');
-    console.error('→ **不要再改数据重试**。按下面顺序定位：');
-    console.error('   1. 跑 `node scripts/check_html.js <out.html>`（景点页加 `--spots`），看**具体哪一项** FAIL；');
-    console.error('   2. FAIL 若是 A2 / A4（价格未标票种、三段数量不足）→ 属**数据问题**，改 data.json 对应字段；');
-    console.error('   3. FAIL 若是 B1 / C（外链、溢出）→ 属**生成器/渲染问题**，如实告诉用户"该页面需修生成器"，不要反复重试；');
-    console.error('   4. 实在过不去 → **交付当前版本 + 在聊天里如实说明哪一项没达标**，不要无限重试。');
-    console.error('');
-    console.error(`（确认要重新开始：node scripts/make_html.js --reset-runs ${outArg}）`);
+  const prevRuns = runCount(loadRuns(), runsKey);
+  const runs = prevRuns + 1;
+  if (runs > HARD_MAX_RUNS) {
+    console.error(`[REFUSE] 同一页面 30 分钟内已生成 ${HARD_MAX_RUNS} 次，这是第 ${runs} 次 —— 已停止生成（防止反复重试烧 token）。`);
+    console.error('         若确实还要再生成（例如客户刚改了需求），先复位计数再重跑：');
+    console.error(`           node scripts/make_html.js --reset-runs "${outArg}"`);
+    console.error('         若是一直 FAIL：按 make_html --check / check_html.js 的明细改 data.json，不要靠重试碰运气。');
     process.exit(1);
+  }
+  if (runs > MAX_RUNS) {
+    console.error(`[WARN] 同一页面 30 分钟内已生成 ${MAX_RUNS} 次，这是第 ${runs} 次（软上限 ${HARD_MAX_RUNS} 次才阻断）—— 继续生成。`);
+    console.error('       注意：第 ' + (HARD_MAX_RUNS + 1) + ' 次会被拒绝；要提前复位用 --reset-runs。');
   }
 
   if (mode === 'plan') buildPlan(d);
@@ -744,7 +825,7 @@ function main() {
   ensureDir(outArg);
   fs.writeFileSync(outArg, shell(d.coverTitle || d.title || mode, d.coverSubtitle), 'utf8');
   bumpRuns(runsKey);
-  console.log(`WROTE: ${outArg}  (章节 ${secs.length} 个${runs > 1 ? `；第 ${runs}/${MAX_RUNS} 次生成` : ''})`);
+  console.log(`WROTE: ${outArg}  (章节 ${secs.length} 个${runs > 1 ? `；第 ${runs}/${HARD_MAX_RUNS} 次生成${runs > MAX_RUNS ? '（已超软上限，注意剩余次数）' : ''}` : ''})`);
 
   // ── --check：生成后立刻校验（景点页自动带 --spots）──
   if (DO_CHECK) {

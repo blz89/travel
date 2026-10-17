@@ -25,8 +25,8 @@
  *
  * points.json 形状:
  *   {
- *     "from": { "name": "甲市", "lng": 120.0000, "lat": 30.0000 },
- *     "to":   { "name": "乙市", "lng": 110.0000, "lat": 25.0000 },
+ *     "from": { "name": "福州", "lng": 119.2965, "lat": 26.0745 },
+ *     "to":   { "name": "田东", "lng": 107.1261, "lat": 23.6001 },
  *     "policy": 0,                       // 0 推荐(默认全程高速) / 1 避免拥堵 / 2 避免收费；3 不走高速在网页版被忽略（要用 shot --pref）
  *     "coord": "gcj02",                  // gcj02(默认) / wgs84(脚本自动转 GCJ-02)
  *     "vias": [ { "name": "三明", "lng": 117.6389, "lat": 26.2637 }, … ]   // 建议 ≤10
@@ -579,7 +579,7 @@ async function shot(url, outPng, opt) {
           }
           const r = n.r != null ? n.r : (n.level === 'high' ? 11 : n.level === 'mid' ? 9 : 7);
           // 用**DOM Marker**而不是 CircleMarker：CircleMarker 画在矢量层，会被高德的
-          // 地名/POI 标签层压住（实测辰市段、丙市段的红点被「申市」「丙市」文字盖掉）。
+          // 地名/POI 标签层压住（实测衡水段、广州段的红点被「石家庄」「广州」文字盖掉）。
           const sz = r * 2 + 4;   // 留出 2px 白描边的位置（内芯仍是 2r，跟 CircleMarker 观感一致）
           new AMap.Marker({
             position: [n.lng, n.lat],
@@ -648,14 +648,14 @@ const HELP = `map-shot.js —— 自驾路线规划出图（高德链接 + 无�
                 parallel:true  → 南北走向路线专用：引线**只走水平**、同侧标注按 y 排成互不重叠的平行阶梯；
                                  每个点用 labelDir:"w"|"e" 指定放路线哪一侧（拥堵段名 w 侧、服务区名 e 侧）
               点用 **DOM AMap.Marker** 渲染（不用 CircleMarker）：CircleMarker 在矢量层会被高德地名层压住
-              （实测红点被「申市」「丙市」等文字盖掉）
+              （实测红点被「石家庄」「广州」等文字盖掉）
               JSON 顶层是数组，或 { "legendTitle": "…", "marks": [ … ] }
               线：默认**不画编号圆点、地图上不写名字**；要圆点才写 badge:true
               点：默认「小圆点 + 引线 + 名字标签」；label＝地图上的名字，legendLabel＝菜单里的长名（只在出菜单时用）
               线可选 dash:true、opacity；点可选 number:true（画序号，**默认不画**）、labelOnMap:false、r:7、labelDir:"w"|"e"
           分隔行：{ "type":"sep", "label":"…" } —— 只在菜单里出一行小标题
          线：{ "type":"line", "level":"high|mid|low"（或 "color":"#C62828"）, "label":"…", "weight":10, "opacity":0.72, "dash":false, "points":[[lng,lat],…] }
-         点：{ "label":"甲服务区", "legendLabel":"1 甲服务区（乙方向）231 km", "lng":…, "lat":…, "color":"#1E88E5", "r":7 }
+         点：{ "label":"深州服务区", "legendLabel":"1 深州服务区（广州方向）231 km", "lng":…, "lat":…, "color":"#1E88E5", "r":7 }
        level 即严重度：high 深红 / mid 红 / low 浅红（判定口径见 references/driving-route-planning.md §1 ⑤″）
        ⚠ 点要先投影到路线折线上再写进 JSON，否则会跑到线外
       无头 Edge + CDP：导航 → 等地图渲染 → 关登录浮层（Esc，可用 --click 点掉关闭按钮）→ 截图
@@ -679,8 +679,8 @@ const HELP = `map-shot.js —— 自驾路线规划出图（高德链接 + 无�
   node scripts/map-shot.js selfcheck     # 不联网：校验坐标系转换与链接拼装
 
 points.json:
-  { "from": {"name":"甲市","lng":120.0000,"lat":30.0000},
-    "to":   {"name":"乙市","lng":110.0000,"lat":25.0000},
+  { "from": {"name":"福州","lng":119.2965,"lat":26.0745},
+    "to":   {"name":"田东","lng":107.1261,"lat":23.6001},
     "policy": 0,                      // 0 推荐(默认全程高速) / 1 避免拥堵 / 2 避免收费
                                       // ⚠ 3「不走高速」在网页版**被忽略**（照样给高速）——要地面路线用 shot 的 --pref 不走高速
     "coord": "gcj02",                 // gcj02 / wgs84(自动转；出图只用高德)
@@ -740,6 +740,15 @@ function parseFlags(argv) {
   }
   if (mode === 'shot') {
     const [, url, out] = argv;
+    // 两个参数都是位置参数（第二个就是输出文件），误加 --out 会把 "--out" 当成文件名写到当前目录
+    if (out && /^-/.test(String(out))) {
+      console.error('输出路径被写成了选项（"' + out + '"）——shot 的第二个参数就是文件名：node scripts/map-shot.js shot <url> <out.png>');
+      process.exit(1);
+    }
+    if (url && !/^https?:\/\//i.test(String(url))) {
+      console.error('第一个参数必须是 http(s) 链接（当前是 "' + url + '"）——先用 map-shot.js link <points.json> 生成链接，再 shot 那个链接。');
+      process.exit(1);
+    }
     if (!url || !out) { console.error('用法: map-shot.js shot <url> <out.png> [--wait ms] [--w px] [--h px] [--scale n] [--nodes json] [--single [--pick N]] [--pref 偏好名] [--click x,y] [--js file]'); process.exit(1); }
     try {
       const r = await shot(url, out, opt);
@@ -763,7 +772,7 @@ function parseFlags(argv) {
     console.log(`WGS84→GCJ02: ${a[0].toFixed(6)},${a[1].toFixed(6)}`);
     console.log(`GCJ02 原样  : ${b[0].toFixed(6)},${b[1].toFixed(6)}`);
     console.log(`未知坐标系  : ${rejected ? '已拒绝' : '未被拒绝 ✗'}`);
-    const r = buildLinks({ from: { name: '甲市', lng: 120.0000, lat: 30.0000 }, to: { name: '乙市', lng: 110.0000, lat: 25.0000 }, coord: 'gcj02', vias: [{ name: '三明', lng: 117.6389, lat: 26.2637 }] });
+    const r = buildLinks({ from: { name: '福州', lng: 119.2965, lat: 26.0745 }, to: { name: '田东', lng: 107.1261, lat: 23.6001 }, coord: 'gcj02', vias: [{ name: '三明', lng: 117.6389, lat: 26.2637 }] });
     const linkOk = r.web.includes('via[0][lnglat]=117.6389,26.2637') && r.android.includes('vian=1') && r.ios.startsWith('iosamap://path?');
     console.log(`链接拼装: web ${r.urlLen} 字符 / android vian=${r.android.match(/vian=(\d+)/)?.[1]} / ios 前缀 ${r.ios.slice(0, 16)}`);
     const pass = inCN && shifted && linkOk && rejected;

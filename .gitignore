@@ -1,10 +1,6 @@
-# 运行时缓存（首次运行自动下载，不入库）
-.flight_cache/
-.stations_cache.json
-.neg_cache.json
-.make_html_runs.json
-
-# 运行产物
+# 运行产物（缓存/计数/状态文件一律写 %TEMP%\travel-cache，不落在技能目录）
 *.pdf
 Thumbs.db
 .DS_Store
+__pycache__/
+data/china-travel/attractions.json
