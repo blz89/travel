@@ -1,0 +1,46 @@
+{
+  "window": "2021-2026",
+  "_purpose": "「历史高频拥堵段」结论库：由**逐年公开来源**（交通运输部/省交通运输厅/交警总队/高速集团/权威媒体）统计得来，用于判断走廊上**被反复点名**的路段。只存统计结论与来源引用；厂商原始路况数据不写入本库。",
+  "_status": "public-template（公开版为模板：下面 3 条仅用于演示工具链与 --check 自检，使用前请删除；真实记录按 SKILL.md 的自采流程逐条积累，每条须含 year/holiday/scope/road/segment/kind/corridor/publisher/url/publishedAt，用 --check 校验）",
+  "collectedAt": "",
+  "note": "corridor=true 表示该条落在本次策划的目标走廊上；每条都能按 url 回溯原文。",
+  "corridorHighways": [],
+  "records": [
+    {
+      "year": 2021,
+      "holiday": "国庆",
+      "scope": "示例",
+      "road": "G9101 甲高速",
+      "segment": "甲省甲市段",
+      "kind": "预测",
+      "corridor": false,
+      "publisher": "示例来源（非真实数据）",
+      "url": "https://example.org/example-1",
+      "publishedAt": "2021-09-30"
+    },
+    {
+      "year": 2022,
+      "holiday": "春节",
+      "scope": "示例",
+      "road": "G9101 甲高速",
+      "segment": "甲省甲市段",
+      "kind": "实测",
+      "corridor": false,
+      "publisher": "示例来源（非真实数据）",
+      "url": "https://example.org/example-2",
+      "publishedAt": "2022-02-07"
+    },
+    {
+      "year": 2026,
+      "holiday": "国庆",
+      "scope": "示例",
+      "road": "G9102 乙高速",
+      "segment": "乙省乙市段",
+      "kind": "预测",
+      "corridor": false,
+      "publisher": "示例来源（非真实数据）",
+      "url": "https://example.org/example-3",
+      "publishedAt": "2026-09-30"
+    }
+  ]
+}
